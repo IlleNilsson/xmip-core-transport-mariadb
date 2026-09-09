@@ -1,0 +1,12 @@
+name: Verify
+
+# Automatic push, pull-request and scheduled triggers are intentionally absent.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    uses: IlleNilsson/.github/.github/workflows/rust-verify.yml@v1

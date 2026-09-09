@@ -1,0 +1,13 @@
+# The toolchain every Xmip Rust repository builds with.
+#
+# Pinned rather than floating. Forty repositories drifting across compiler
+# versions turns one person's build failure into a version archaeology problem,
+# and the cost of that is paid forever. Raising this is a deliberate change to
+# every repository, made once and reviewed.
+#
+# rustup reads this file automatically and installs the toolchain if missing.
+
+[toolchain]
+channel = "1.94.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

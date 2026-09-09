@@ -1,0 +1,75 @@
+# Rust / Cargo build output
+target/
+**/target/
+
+# Cargo.lock is not committed.
+#
+# Every Xmip module is a library, and a library's lock file is never read by
+# anything that depends on it. More decisively: dependencies track `branch =
+# "main"` under ADR-0005, and a committed lock pins a commit — which re-derives
+# by hand exactly what tracking main exists to avoid, and churns in every
+# module on every update.
+#
+# This is reversed at first release, when dependencies move from a branch to
+# pinned versions and the assembly becomes something worth reproducing byte for
+# byte.
+Cargo.lock
+
+# Rust compiler intermediate artifacts
+*.rlib
+*.rmeta
+*.d
+
+# Local debug symbols and OS-specific build products generated under development
+*.pdb
+
+# Xmip local runtime proof artifacts
+execution-context.pb
+crash-once.marker
+*.pb
+*.checkpoint
+*.runtime
+*.audit.local
+*.trace.local
+*.tracking.local
+
+# Local runtime data and embedded databases
+data/
+**/data/
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+persistence-rocksdb/
+**/persistence-rocksdb/
+management.sqlite
+
+# Local inbound/outbound test folders
+/inbound/
+/outbound/
+/tmp/
+/temp/
+tmp/
+temp/
+
+# Environment and local settings
+.env
+.env.*
+*.local
+
+# Editors and IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+logs/
+**/logs/
