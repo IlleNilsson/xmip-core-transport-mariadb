@@ -49,13 +49,22 @@ pub use client::{Client, QueryResult, quote_identifier, quote_literal};
 pub use handshake::Login;
 pub use session::{Answer, Event, Session};
 use transport::claim::{NoNativeClaim, ResourceClaim};
-use transport::error::{Result, TransportError};
+use transport::error::{Result, TransportError, protocol_error};
+use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
 
 /// What a Receive Location runs unless told otherwise.
 pub const DEFAULT_QUERY: &str = "SELECT id, payload FROM inbox ORDER BY id";
 
+/// What the loopback pair agrees on: one database, one user with no
+/// password that the far end demands and the near end gives, one table
+/// and column the payload is inserted into.
+const LOOPBACK_DATABASE: &str = "probe";
+const LOOPBACK_USER: &str = "xmip";
+const LOOPBACK_TARGET: &str = "probe/payload";
+
+#[derive(Clone)]
 pub struct MysqlTransport {
     server: String,
     database: String,
@@ -207,6 +216,63 @@ impl Transport for MysqlTransport {
     /// one in.
     fn claims(&self) -> Option<&dyn ResourceClaim> {
         Some(&NoNativeClaim)
+    }
+}
+
+impl MysqlTransport {
+    /// Both ends on this machine: an ephemeral local port, a login with no
+    /// password, the loopback timeout.
+    #[must_use]
+    pub fn loopback() -> Self {
+        Self::new("127.0.0.1:0", LOOPBACK_DATABASE, LOOPBACK_USER)
+            .timing_out_after(LOOPBACK_TIMEOUT)
+    }
+}
+
+/// A bound listener waiting for its one client: logged in, one INSERT
+/// taken as the Stream, its `COM_QUIT` read.
+struct Listening {
+    transport: MysqlTransport,
+    listener: TcpListener,
+    address: String,
+}
+
+impl FarEnd for Listening {
+    fn address(&self) -> &str {
+        &self.address
+    }
+
+    fn take_one(self: Box<Self>) -> Result<Arrived> {
+        let mut session = self.transport.accept_one(&self.listener)?;
+        let arrived = session
+            .next_insert()?
+            .ok_or_else(|| protocol_error("the client closed without inserting"))?;
+        // Read the quit that follows, so the goodbye is taken rather than
+        // written into a closed socket.
+        session.next_insert()?;
+        Ok(arrived)
+    }
+}
+
+impl Loopback for MysqlTransport {
+    fn far_end(&self) -> Result<Box<dyn FarEnd>> {
+        let (listener, address) = self.bind()?;
+        Ok(Box::new(Listening {
+            transport: self.clone(),
+            listener,
+            address,
+        }))
+    }
+
+    /// INSERT the payload as one column of one row — text as text, anything
+    /// else as an `X'…'` literal — from a fresh near end logging in to
+    /// `address` as this transport does.
+    fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
+        let near = Self {
+            server: address.to_string(),
+            ..self.clone()
+        };
+        near.send(LOOPBACK_TARGET, payload)
     }
 }
 
@@ -398,5 +464,41 @@ mod tests {
         assert!(error.message.contains("caching_sha2_password"));
         assert!(error.message.contains(NATIVE_PASSWORD));
         assert!(near.connect().is_err(), "not the protocol");
+    }
+
+    #[test]
+    fn the_loopback_inserts_text_and_bytes_through_its_own_session() {
+        let pair = MysqlTransport::loopback();
+        let arrived = pair.round(b"it's \\here").expect("round");
+        assert_eq!(arrived.bytes, b"it's \\here");
+        assert!(arrived.origin_uri.starts_with("mysql://127.0.0.1:"));
+        assert!(arrived.origin_uri.ends_with("/probe/probe/payload"));
+        let binary = pair.round(&[0xff, 0xfe]).expect("the hex literal");
+        assert_eq!(binary.bytes, [0xff, 0xfe]);
+        assert_eq!(pair.name(), "mysql");
+        assert_eq!(pair.ceiling(), None);
+    }
+
+    /// The Playground's edge payloads, written here so the crate does not
+    /// depend on it.
+    fn edge_payloads() -> Vec<(&'static str, Vec<u8>)> {
+        vec![
+            ("empty", Vec::new()),
+            ("one byte", vec![0x2a]),
+            ("every byte", (0..=255).collect()),
+            ("nul run", vec![0; 512]),
+            ("high bytes", vec![0xff; 512]),
+            ("crlf storm", b"\r\n".repeat(400)),
+        ]
+    }
+
+    #[test]
+    fn the_loopback_returns_the_edge_payloads_whole() {
+        let pair = MysqlTransport::loopback();
+        for (name, payload) in edge_payloads() {
+            assert!(pair.refuses(&payload).is_none(), "{name}");
+            let arrived = pair.round(&payload).expect(name);
+            assert_eq!(arrived.bytes, payload, "{name}");
+        }
     }
 }
