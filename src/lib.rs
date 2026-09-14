@@ -50,6 +50,7 @@ pub use handshake::Login;
 pub use session::{Answer, Event, Session};
 use transport::claim::{NoNativeClaim, ResourceClaim};
 use transport::error::{Result, TransportError, protocol_error};
+use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
@@ -229,21 +230,9 @@ impl MysqlTransport {
     }
 }
 
-/// A bound listener waiting for its one client: logged in, one INSERT
-/// taken as the Stream, its `COM_QUIT` read.
-struct Listening {
-    transport: MysqlTransport,
-    listener: TcpListener,
-    address: String,
-}
-
-impl FarEnd for Listening {
-    fn address(&self) -> &str {
-        &self.address
-    }
-
-    fn take_one(self: Box<Self>) -> Result<Arrived> {
-        let mut session = self.transport.accept_one(&self.listener)?;
+impl Accepting for MysqlTransport {
+    fn take_one(&self, listener: &TcpListener) -> Result<Arrived> {
+        let mut session = self.accept_one(listener)?;
         let arrived = session
             .next_insert()?
             .ok_or_else(|| protocol_error("the client closed without inserting"))?;
@@ -257,11 +246,7 @@ impl FarEnd for Listening {
 impl Loopback for MysqlTransport {
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
         let (listener, address) = self.bind()?;
-        Ok(Box::new(Listening {
-            transport: self.clone(),
-            listener,
-            address,
-        }))
+        Ok(Box::new(Listening::new(self.clone(), listener, address)))
     }
 
     /// INSERT the payload as one column of one row — text as text, anything
@@ -281,6 +266,7 @@ mod tests {
     use super::*;
     use crate::handshake::{CAPABILITIES, HandshakeV10, NATIVE_PASSWORD, encode_handshake};
     use crate::wire::{cstring, frame};
+    use transport::payload::edge_payloads;
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
@@ -477,19 +463,6 @@ mod tests {
         assert_eq!(binary.bytes, [0xff, 0xfe]);
         assert_eq!(pair.name(), "mysql");
         assert_eq!(pair.ceiling(), None);
-    }
-
-    /// The Playground's edge payloads, written here so the crate does not
-    /// depend on it.
-    fn edge_payloads() -> Vec<(&'static str, Vec<u8>)> {
-        vec![
-            ("empty", Vec::new()),
-            ("one byte", vec![0x2a]),
-            ("every byte", (0..=255).collect()),
-            ("nul run", vec![0; 512]),
-            ("high bytes", vec![0xff; 512]),
-            ("crlf storm", b"\r\n".repeat(400)),
-        ]
     }
 
     #[test]

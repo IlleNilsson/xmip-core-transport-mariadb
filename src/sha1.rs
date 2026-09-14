@@ -8,6 +8,9 @@
 //! pulling a crate in for one login, and checked against the vectors in
 //! FIPS 180-1.
 
+/// A digest as lower-case hex, for a test or a log.
+pub use transport::hex::hex;
+
 /// A SHA-1 digest is twenty bytes.
 pub const DIGEST_LENGTH: usize = 20;
 
@@ -75,17 +78,6 @@ fn compress(state: &mut [u32; 5], block: &[u8]) {
     for (slot, value) in state.iter_mut().zip([a, b, c, d, e]) {
         *slot = slot.wrapping_add(value);
     }
-}
-
-/// `digest` as lower-case hex, for a test or a log.
-#[must_use]
-pub fn hex(digest: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
 }
 
 #[cfg(test)]

@@ -2,7 +2,10 @@
 //! answers blindly: `INSERT INTO t (c) VALUES (...)`, taken apart so the
 //! value a client sent comes back as the Stream it was — the inverse of
 //! [`crate::quote_literal`] and of the `X'…'` literal, with the escapes
-//! the server would undo undone here.
+//! the server would undo undone here. The statement's shape is the
+//! capability's (`transport::sql`, ADR-0044); the dialect is here.
+
+use transport::sql;
 
 use crate::hex::from_hex_literal;
 
@@ -11,18 +14,8 @@ use crate::hex::from_hex_literal;
 /// undone, or the bytes of an `X'…'` literal. Identifiers may be in
 /// backticks; anything else is `None`.
 #[must_use]
-pub fn parse_insert(sql: &str) -> Option<(String, String, Vec<u8>)> {
-    let rest = sql.trim().trim_end_matches(';');
-    let rest = strip_word(rest, "INSERT")?;
-    let rest = strip_word(rest, "INTO")?;
-    let (table, rest) = identifier(rest)?;
-    let rest = rest.trim_start().strip_prefix('(')?;
-    let (column, rest) = identifier(rest)?;
-    let rest = rest.trim_start().strip_prefix(')')?;
-    let rest = strip_word(rest, "VALUES")?;
-    let rest = rest.trim_start().strip_prefix('(')?.trim_start();
-    let (value, tail) = literal(rest)?;
-    (tail.trim() == ")").then_some((table, column, value))
+pub fn parse_insert(statement: &str) -> Option<(String, String, Vec<u8>)> {
+    sql::parse_insert(statement, identifier, literal)
 }
 
 /// One literal — `'…'` with backslash escapes, or `X'…'` — and what
@@ -63,12 +56,6 @@ fn literal(rest: &str) -> Option<(Vec<u8>, &str)> {
             other => value.push(other),
         }
     }
-}
-
-fn strip_word<'a>(rest: &'a str, word: &str) -> Option<&'a str> {
-    let rest = rest.trim_start();
-    let head = rest.get(..word.len())?;
-    head.eq_ignore_ascii_case(word).then(|| &rest[word.len()..])
 }
 
 /// One identifier, bare or in backticks, and what follows it.

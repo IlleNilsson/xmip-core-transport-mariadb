@@ -20,6 +20,11 @@ path = "src/lib.rs"
 # native password is SHA-1 twice, which sha1.rs writes out.
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
 
+[dev-dependencies]
+# The loopback payloads the tests drive, from the capability's test
+# support and never a production build (ADR-0044).
+transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", features = ["test-support"] }
+
 [lints.rust]
 unsafe_code = "forbid"
 
