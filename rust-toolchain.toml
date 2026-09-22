@@ -1,13 +1,14 @@
-# The toolchain every Xmip Rust repository builds with.
+# Latest stable, everywhere. rustup reads this file and uses it for every cargo
+# command run inside the repository, so a developer machine and CI compile with
+# the same compiler without anybody choosing a version.
 #
-# Pinned rather than floating. Forty repositories drifting across compiler
-# versions turns one person's build failure into a version archaeology problem,
-# and the cost of that is paid forever. Raising this is a deliberate change to
-# every repository, made once and reviewed.
+# "stable" is a moving target by design: it follows each six-week release. That
+# is the intent. Pinning an exact version here would freeze the estate on a
+# compiler that ages, which is the problem this file exists to avoid.
 #
-# rustup reads this file automatically and installs the toolchain if missing.
+# The components are not optional. CI runs cargo fmt --check and clippy with
+# -D warnings, so a toolchain without them fails at the first gate.
 
 [toolchain]
-channel = "1.94.1"
-components = ["clippy", "rustfmt"]
-profile = "minimal"
+channel = "stable"
+components = ["rustfmt", "clippy"]
