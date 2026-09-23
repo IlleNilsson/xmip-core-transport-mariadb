@@ -33,12 +33,12 @@ pub fn sha1(message: &[u8]) -> [u8; DIGEST_LENGTH] {
         .unwrap_or(u64::MAX)
         .wrapping_mul(8);
     padded.extend_from_slice(&bits.to_be_bytes());
-    for block in padded.chunks_exact(64) {
+    for block in padded.as_chunks::<64>().0 {
         compress(&mut state, block);
     }
     let mut digest = [0u8; DIGEST_LENGTH];
-    for (word, out) in state.iter().zip(digest.chunks_exact_mut(4)) {
-        out.copy_from_slice(&word.to_be_bytes());
+    for (word, out) in state.iter().zip(digest.as_chunks_mut::<4>().0) {
+        *out = word.to_be_bytes();
     }
     digest
 }
@@ -49,8 +49,8 @@ pub fn sha1(message: &[u8]) -> [u8; DIGEST_LENGTH] {
 #[allow(clippy::many_single_char_names)]
 fn compress(state: &mut [u32; 5], block: &[u8]) {
     let mut w = [0u32; 80];
-    for (word, bytes) in w.iter_mut().zip(block.chunks_exact(4)) {
-        *word = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    for (word, bytes) in w.iter_mut().zip(block.as_chunks::<4>().0) {
+        *word = u32::from_be_bytes(*bytes);
     }
     for t in 16..80 {
         w[t] = (w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16]).rotate_left(1);
