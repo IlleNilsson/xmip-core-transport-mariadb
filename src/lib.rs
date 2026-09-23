@@ -17,7 +17,7 @@
 //! `mysql_native_password` way (`handshake.rs`, SHA-1 from `sha1.rs`),
 //! `COM_QUERY` with rows as text (`result.rs`), `COM_QUIT`.
 //! `caching_sha2_password` is not implemented and a server that asks for
-//! it is told so; TLS is the transport capability's, per ADR-0033.
+//! it is told so; TLS is `xmip-core-tls`'s, per ADR-0033.
 //!
 //! Rows are artefacts and this transport claims none of them, per ADR-0024:
 //! the atomic claim a database has, `SELECT … FOR UPDATE SKIP LOCKED`, only
