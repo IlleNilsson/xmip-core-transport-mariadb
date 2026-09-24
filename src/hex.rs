@@ -11,8 +11,6 @@
 //! Text that happens to be in one of those forms is read as bytes; that
 //! is the price of one column carrying both, and it is paid on purpose.
 
-pub use transport::sql::is_text;
-
 /// `bytes` as the hexadecimal literal: `X'` then two lower-case digits a
 /// byte, then `'`. Unquoted, as a literal goes into a statement.
 #[must_use]
