@@ -24,7 +24,6 @@ use crate::handshake::{
 };
 use crate::insert::parse_insert;
 use crate::result::{Reply, encode_column, encode_column_count, encode_reply, encode_row};
-use crate::sha1::sha1;
 use crate::wire::{Command, decode_command, frame, read_packet};
 
 /// What this far end says it is.
@@ -310,7 +309,7 @@ fn fresh_nonce(peer: &SocketAddr) -> Vec<u8> {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |since| since.as_nanos());
     let seed = format!("{nanos}:{peer}:{}", CONNECTIONS.load(Ordering::Relaxed));
-    sha1(seed.as_bytes())
+    codec::sha1::digest(seed.as_bytes())
         .iter()
         .map(|byte| b'!' + byte % 94)
         .take(NONCE_LENGTH)

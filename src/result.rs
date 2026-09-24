@@ -9,9 +9,11 @@
 //! ERR, `0xFE` in a packet under nine bytes is EOF, and anything else is
 //! the column count that opens a result set — or, inside one, a row.
 
+use codec::cursor::Cursor;
+use codec::writer::ByteWriter;
 use transport::error::{Result, protocol_error};
 
-use crate::wire::{Cursor, lenenc_bytes, lenenc_int};
+use crate::wire::{Mysql, MysqlWrite};
 
 /// Opens an OK packet.
 pub const OK_HEADER: u8 = 0x00;
@@ -61,8 +63,7 @@ pub fn encode_reply(reply: &Reply) -> Vec<u8> {
             warnings,
         } => {
             out.push(OK_HEADER);
-            lenenc_int(&mut out, *affected_rows);
-            lenenc_int(&mut out, *last_insert_id);
+            out.lenenc_int(*affected_rows).lenenc_int(*last_insert_id);
             out.extend_from_slice(&status.to_le_bytes());
             out.extend_from_slice(&warnings.to_le_bytes());
         }
@@ -105,20 +106,20 @@ pub fn decode_reply(payload: &[u8]) -> Result<Reply> {
             Ok(Reply::Ok {
                 affected_rows: cursor.lenenc_int()?,
                 last_insert_id: cursor.lenenc_int()?,
-                status: cursor.int16()?,
-                warnings: cursor.int16()?,
+                status: cursor.u16_le()?,
+                warnings: cursor.u16_le()?,
             })
         }
         Some(&ERR_HEADER) => {
             cursor.skip(1)?;
-            let code = cursor.int16()?;
+            let code = cursor.u16_le()?;
             let state = if cursor.peek() == Some(b'#') {
                 cursor.skip(1)?;
                 String::from_utf8_lossy(cursor.take(5)?).into_owned()
             } else {
                 String::new()
             };
-            let message = String::from_utf8_lossy(cursor.rest()).into_owned();
+            let message = String::from_utf8_lossy(cursor.take_rest()).into_owned();
             Ok(Reply::Err {
                 code,
                 state,
@@ -128,8 +129,8 @@ pub fn decode_reply(payload: &[u8]) -> Result<Reply> {
         Some(&EOF_HEADER) if payload.len() < 9 => {
             cursor.skip(1)?;
             Ok(Reply::Eof {
-                warnings: cursor.int16()?,
-                status: cursor.int16()?,
+                warnings: cursor.u16_le()?,
+                status: cursor.u16_le()?,
             })
         }
         Some(_) => Ok(Reply::Data(payload.to_vec())),
@@ -154,7 +155,7 @@ pub fn decode_in_result_set(payload: &[u8]) -> Result<Reply> {
 #[must_use]
 pub fn encode_column_count(count: usize) -> Vec<u8> {
     let mut out = Vec::new();
-    lenenc_int(&mut out, u64::try_from(count).unwrap_or(u64::MAX));
+    out.lenenc_int(u64::try_from(count).unwrap_or(u64::MAX));
     out
 }
 
@@ -176,13 +177,13 @@ pub fn decode_column_count(payload: &[u8]) -> Result<usize> {
 #[must_use]
 pub fn encode_column(name: &str) -> Vec<u8> {
     let mut out = Vec::new();
-    lenenc_bytes(&mut out, b"def");
-    lenenc_bytes(&mut out, b"");
-    lenenc_bytes(&mut out, b"");
-    lenenc_bytes(&mut out, b"");
-    lenenc_bytes(&mut out, name.as_bytes());
-    lenenc_bytes(&mut out, name.as_bytes());
-    lenenc_int(&mut out, FIXED_FIELDS);
+    out.lenenc_bytes(b"def") // catalog
+        .lenenc_bytes(b"")
+        .lenenc_bytes(b"")
+        .lenenc_bytes(b"")
+        .lenenc_bytes(name.as_bytes())
+        .lenenc_bytes(name.as_bytes())
+        .lenenc_int(FIXED_FIELDS);
     out.extend_from_slice(&45u16.to_le_bytes()); // utf8mb4
     out.extend_from_slice(&0xffff_ffffu32.to_le_bytes()); // column length
     out.push(VAR_STRING);
@@ -210,9 +211,9 @@ pub fn encode_row(values: &[Option<String>]) -> Vec<u8> {
     let mut out = Vec::new();
     for value in values {
         match value {
-            Some(text) => lenenc_bytes(&mut out, text.as_bytes()),
-            None => out.push(NULL_VALUE),
-        }
+            Some(text) => out.lenenc_bytes(text.as_bytes()),
+            None => out.byte(NULL_VALUE),
+        };
     }
     out
 }

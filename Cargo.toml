@@ -15,10 +15,14 @@ path = "src/lib.rs"
 
 [dependencies]
 # A Technology depends on its parent Capability, never the reverse
-# (repository-model.md). Standard library otherwise: the protocol is a
-# three-byte length, a sequence byte and length-prefixed fields, and the
-# native password is SHA-1 twice, which sha1.rs writes out.
+# (repository-model.md). The protocol is a three-byte length, a sequence
+# byte and length-prefixed fields.
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
+# The estate's encoding primitives: the byte cursor and writer the fields
+# are read and written over, hex for the binary literal, SHA-1 for the
+# native password, and SQL's delimited literals and identifiers, written
+# and read once for every dialect; which delimiter is this one's own.
+codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
 [dev-dependencies]
 # The loopback payloads the tests drive, from the capability's test

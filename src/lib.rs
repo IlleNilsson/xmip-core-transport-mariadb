@@ -14,7 +14,7 @@
 //! form is the bytes again on the way back (`hex.rs`). What is spoken is
 //! the client/server protocol as every client since 4.1 speaks it, on
 //! port 3306: the greeting, a response with the password scrambled the
-//! `mysql_native_password` way (`handshake.rs`, SHA-1 from `sha1.rs`),
+//! `mysql_native_password` way (`handshake.rs`, SHA-1 from codec),
 //! `COM_QUERY` with rows as text (`result.rs`), `COM_QUIT`.
 //! `caching_sha2_password` is not implemented and a server that asks for
 //! it is told so; TLS is `xmip-core-library-tls`'s, per ADR-0033.
@@ -39,7 +39,6 @@ pub mod hex;
 pub mod insert;
 pub mod result;
 pub mod session;
-pub mod sha1;
 pub mod wire;
 
 use std::net::TcpListener;
@@ -265,7 +264,7 @@ impl Loopback for MysqlTransport {
 mod tests {
     use super::*;
     use crate::handshake::{CAPABILITIES, HandshakeV10, NATIVE_PASSWORD, encode_handshake};
-    use crate::wire::{cstring, frame};
+    use crate::wire::{MysqlWrite, frame};
     use transport::payload::edge_payloads;
 
     fn secs(n: u64) -> Duration {
@@ -427,7 +426,7 @@ mod tests {
             }),
         );
         let mut switch = vec![0xfe];
-        cstring(&mut switch, "caching_sha2_password");
+        switch.cstring("caching_sha2_password");
         switch.extend_from_slice(b"nonce-nonce-nonce-no\0");
         std::thread::spawn(move || {
             for (first, second) in [

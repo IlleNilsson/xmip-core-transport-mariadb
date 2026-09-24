@@ -5,12 +5,18 @@
 //! next; the sequence byte counts the packets of one exchange from zero and
 //! starts over at every command.
 //!
-//! The handshake is in `handshake.rs` and what a query comes back with is
-//! in `result.rs`; this file is what both are made of, and the two commands
+//! Fields are read and written through codec's byte cursor and writer;
+//! what is `MySQL`'s own — the three-byte length, the length-encoded
+//! integer and string, the NUL-terminated string — is [`Mysql`] on the
+//! cursor and [`MysqlWrite`] beside the writer. The handshake is in
+//! `handshake.rs` and what a query comes back with is in `result.rs`; this
+//! file is what both are made of, and the two commands
 //! this crate sends, because a command packet is one byte and the text.
 
 use std::io::Read;
 
+use codec::cursor::Cursor;
+use codec::writer::ByteWriter;
 use transport::error::{Result, classify, protocol_error};
 
 /// The most one packet carries; a longer payload continues in the next.
@@ -66,10 +72,8 @@ pub fn frame(sequence: &mut u8, payload: &[u8]) -> Vec<u8> {
     let mut chunks = payload.chunks(MAX_PACKET).peekable();
     let mut last_was_full = payload.is_empty();
     while let Some(chunk) = chunks.next() {
-        out.extend_from_slice(&int24(chunk.len()));
-        out.push(*sequence);
+        out.int24(chunk.len()).byte(*sequence).bytes(chunk);
         *sequence = sequence.wrapping_add(1);
-        out.extend_from_slice(chunk);
         last_was_full = chunk.len() == MAX_PACKET && chunks.peek().is_none();
     }
     if last_was_full {
@@ -120,134 +124,31 @@ pub fn read_packet(reader: &mut impl Read) -> Result<Option<(u8, Vec<u8>)>> {
     }
 }
 
-/// `count` as the header's three bytes, little-endian.
-#[must_use]
-pub fn int24(count: usize) -> [u8; 3] {
-    let bytes = u32::try_from(count.min(MAX_PACKET))
-        .unwrap_or(0)
-        .to_le_bytes();
-    [bytes[0], bytes[1], bytes[2]]
-}
-
-/// `value` as a length-encoded integer.
-pub fn lenenc_int(out: &mut Vec<u8>, value: u64) {
-    match value {
-        0..=0xfa => out.push(u8::try_from(value).unwrap_or(0)),
-        0xfb..=0xffff => {
-            out.push(0xfc);
-            out.extend_from_slice(&value.to_le_bytes()[..2]);
-        }
-        0x1_0000..=0xff_ffff => {
-            out.push(0xfd);
-            out.extend_from_slice(&value.to_le_bytes()[..3]);
-        }
-        _ => {
-            out.push(0xfe);
-            out.extend_from_slice(&value.to_le_bytes());
-        }
-    }
-}
-
-/// `bytes` behind its length-encoded length.
-pub fn lenenc_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
-    lenenc_int(out, u64::try_from(bytes.len()).unwrap_or(u64::MAX));
-    out.extend_from_slice(bytes);
-}
-
-/// `text` followed by the NUL that ends a wire string.
-pub fn cstring(out: &mut Vec<u8>, text: &str) {
-    out.extend_from_slice(text.as_bytes());
-    out.push(0);
-}
-
-/// Reads a payload's fields in order.
-pub struct Cursor<'a> {
-    bytes: &'a [u8],
-    at: usize,
-}
-
-impl<'a> Cursor<'a> {
-    /// A cursor at the start of `bytes`.
-    #[must_use]
-    pub const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, at: 0 }
-    }
-
-    /// True when nothing remains.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.at >= self.bytes.len()
-    }
-
-    /// The next `count` bytes.
-    ///
-    /// # Errors
-    /// Fewer than `count` bytes remain.
-    pub fn take(&mut self, count: usize) -> Result<&'a [u8]> {
-        let end = self
-            .at
-            .checked_add(count)
-            .filter(|end| *end <= self.bytes.len())
-            .ok_or_else(|| protocol_error("a field that runs past the packet"))?;
-        let slice = &self.bytes[self.at..end];
-        self.at = end;
-        Ok(slice)
-    }
-
-    /// Everything that remains.
-    #[must_use]
-    pub fn rest(&mut self) -> &'a [u8] {
-        let slice = &self.bytes[self.at.min(self.bytes.len())..];
-        self.at = self.bytes.len();
-        slice
-    }
-
-    /// Past the next `count` bytes.
-    ///
-    /// # Errors
-    /// Fewer than `count` bytes remain.
-    pub fn skip(&mut self, count: usize) -> Result<()> {
-        self.take(count).map(|_| ())
-    }
-
-    /// The next byte.
-    ///
-    /// # Errors
-    /// Nothing remains.
-    pub fn byte(&mut self) -> Result<u8> {
-        Ok(self.take(1)?[0])
-    }
-
-    /// The next byte without taking it.
-    #[must_use]
-    pub fn peek(&self) -> Option<u8> {
-        self.bytes.get(self.at).copied()
-    }
-
-    /// The next little-endian u16.
-    ///
-    /// # Errors
-    /// Fewer than two bytes remain.
-    pub fn int16(&mut self) -> Result<u16> {
-        let b = self.take(2)?;
-        Ok(u16::from_le_bytes([b[0], b[1]]))
-    }
-
-    /// The next little-endian u32.
-    ///
-    /// # Errors
-    /// Fewer than four bytes remain.
-    pub fn int32(&mut self) -> Result<u32> {
-        let b = self.take(4)?;
-        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-
+/// `MySQL`'s own fields, read off codec's cursor. Fixed integers are codec's,
+/// little-endian (`u16_le`, `u32_le`).
+pub trait Mysql {
     /// The next length-encoded integer.
     ///
     /// # Errors
     /// Nothing remains, the integer breaks off, or its first byte is the
     /// NULL marker or one the encoding does not use.
-    pub fn lenenc_int(&mut self) -> Result<u64> {
+    fn lenenc_int(&mut self) -> Result<u64>;
+
+    /// The next length-encoded string, lossily UTF-8.
+    ///
+    /// # Errors
+    /// The length or the string breaks off.
+    fn lenenc_str(&mut self) -> Result<String>;
+
+    /// The next NUL-terminated string, lossily UTF-8.
+    ///
+    /// # Errors
+    /// No NUL before the end.
+    fn cstring(&mut self) -> Result<String>;
+}
+
+impl Mysql for Cursor<'_> {
+    fn lenenc_int(&mut self) -> Result<u64> {
         let width = match self.byte()? {
             small @ 0..=0xfa => return Ok(u64::from(small)),
             0xfc => 2,
@@ -264,28 +165,58 @@ impl<'a> Cursor<'a> {
         Ok(u64::from_le_bytes(bytes))
     }
 
-    /// The next length-encoded string, lossily UTF-8.
-    ///
-    /// # Errors
-    /// The length or the string breaks off.
-    pub fn lenenc_str(&mut self) -> Result<String> {
+    fn lenenc_str(&mut self) -> Result<String> {
         let length = usize::try_from(self.lenenc_int()?)
             .map_err(|_| protocol_error("a string longer than memory"))?;
         Ok(String::from_utf8_lossy(self.take(length)?).into_owned())
     }
 
-    /// The next NUL-terminated string, lossily UTF-8.
-    ///
-    /// # Errors
-    /// No NUL before the end.
-    pub fn cstring(&mut self) -> Result<String> {
-        let end = self.bytes[self.at.min(self.bytes.len())..]
-            .iter()
-            .position(|b| *b == 0)
-            .ok_or_else(|| protocol_error("a string that never ends"))?;
-        let text = String::from_utf8_lossy(self.take(end)?).into_owned();
-        self.skip(1)?;
-        Ok(text)
+    fn cstring(&mut self) -> Result<String> {
+        Ok(String::from_utf8_lossy(self.take_until(0)?).into_owned())
+    }
+}
+
+/// `MySQL`'s own fields, written beside codec's writer.
+pub trait MysqlWrite {
+    /// `count` as the packet header's three bytes, little-endian, at most
+    /// [`MAX_PACKET`].
+    fn int24(&mut self, count: usize) -> &mut Self;
+
+    /// `value` as a length-encoded integer.
+    fn lenenc_int(&mut self, value: u64) -> &mut Self;
+
+    /// `bytes` behind its length-encoded length.
+    fn lenenc_bytes(&mut self, bytes: &[u8]) -> &mut Self;
+
+    /// `text` followed by the NUL that ends a wire string.
+    fn cstring(&mut self, text: &str) -> &mut Self;
+}
+
+impl MysqlWrite for Vec<u8> {
+    fn int24(&mut self, count: usize) -> &mut Self {
+        let bytes = u32::try_from(count.min(MAX_PACKET))
+            .unwrap_or(0)
+            .to_le_bytes();
+        self.bytes(&bytes[..3])
+    }
+
+    fn lenenc_int(&mut self, value: u64) -> &mut Self {
+        let bytes = value.to_le_bytes();
+        match value {
+            0..=0xfa => self.byte(bytes[0]),
+            0xfb..=0xffff => self.byte(0xfc).bytes(&bytes[..2]),
+            0x1_0000..=0xff_ffff => self.byte(0xfd).bytes(&bytes[..3]),
+            _ => self.byte(0xfe).bytes(&bytes),
+        }
+    }
+
+    fn lenenc_bytes(&mut self, bytes: &[u8]) -> &mut Self {
+        self.lenenc_int(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+            .bytes(bytes)
+    }
+
+    fn cstring(&mut self, text: &str) -> &mut Self {
+        self.bytes(text.as_bytes()).byte(0)
     }
 }
 
@@ -362,13 +293,13 @@ mod tests {
             0x100_0000,
             u64::MAX,
         ] {
-            lenenc_int(&mut out, value);
+            out.lenenc_int(value);
         }
-        lenenc_bytes(&mut out, b"payload");
-        cstring(&mut out, "def");
-        out.extend_from_slice(&7u16.to_le_bytes());
-        out.extend_from_slice(&70_000u32.to_le_bytes());
-        out.push(b'Z');
+        out.lenenc_bytes(b"payload")
+            .cstring("def")
+            .u16_le(7)
+            .u32_le(70_000)
+            .byte(b'Z');
         let mut cursor = Cursor::new(&out);
         for value in [
             0,
@@ -384,17 +315,22 @@ mod tests {
         }
         assert_eq!(cursor.lenenc_str().expect("str"), "payload");
         assert_eq!(cursor.cstring().expect("cstring"), "def");
-        assert_eq!(cursor.int16().expect("u16"), 7);
-        assert_eq!(cursor.int32().expect("u32"), 70_000);
+        assert_eq!(cursor.u16_le().expect("u16"), 7);
+        assert_eq!(cursor.u32_le().expect("u32"), 70_000);
         assert_eq!(cursor.peek(), Some(b'Z'));
-        assert_eq!(cursor.rest(), b"Z");
+        assert_eq!(cursor.take_rest(), b"Z");
         assert!(cursor.is_empty());
-        assert!(cursor.byte().is_err(), "past the end");
+        let error = cursor.byte().expect_err("past the end");
+        assert!(error.message.contains("runs past"), "{}", error.message);
         assert!(
             Cursor::new(&[0xfb]).lenenc_int().is_err(),
             "NULL is not an integer"
         );
-        assert!(Cursor::new(&[0xfc, 1]).lenenc_int().is_err(), "breaks off");
+        let error = Cursor::new(&[0xfc, 1])
+            .lenenc_int()
+            .expect_err("breaks off");
+        assert!(error.message.contains("runs past"), "{}", error.message);
+        assert!(!error.retryable);
         assert!(Cursor::new(b"no NUL").cstring().is_err());
         assert!(decode_command(&[0x0e]).is_err(), "COM_PING is not served");
         assert!(decode_command(&[]).is_err());

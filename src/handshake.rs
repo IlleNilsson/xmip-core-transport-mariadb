@@ -21,10 +21,12 @@
 //! since 8.0, is not implemented; an account that uses it is told so, and
 //! the server can be asked for `mysql_native_password` on that account.
 
+use codec::cursor::Cursor;
+use codec::sha1::{DIGEST_LENGTH, digest};
+use codec::writer::ByteWriter;
 use transport::error::{Result, protocol_error};
 
-use crate::sha1::{DIGEST_LENGTH, sha1};
-use crate::wire::{Cursor, cstring};
+use crate::wire::{Mysql, MysqlWrite};
 
 /// The version byte a greeting opens with.
 pub const PROTOCOL_VERSION: u8 = 10;
@@ -97,12 +99,12 @@ pub fn scramble(password: &str, nonce: &[u8]) -> Vec<u8> {
     if password.is_empty() {
         return Vec::new();
     }
-    let first = sha1(password.as_bytes());
-    let second = sha1(&first);
+    let first = digest(password.as_bytes());
+    let second = digest(&first);
     let mut salted = Vec::with_capacity(nonce.len() + DIGEST_LENGTH);
     salted.extend_from_slice(nonce);
     salted.extend_from_slice(&second);
-    let third = sha1(&salted);
+    let third = digest(&salted);
     first.iter().zip(third).map(|(a, b)| a ^ b).collect()
 }
 
@@ -115,23 +117,23 @@ pub fn verify(password: &str, nonce: &[u8], response: &[u8]) -> bool {
 /// `greeting` as a payload.
 #[must_use]
 pub fn encode_handshake(greeting: &HandshakeV10) -> Vec<u8> {
-    let mut out = vec![PROTOCOL_VERSION];
-    cstring(&mut out, &greeting.server_version);
-    out.extend_from_slice(&greeting.connection_id.to_le_bytes());
     let mut nonce = greeting.nonce.clone();
     nonce.resize(NONCE_LENGTH, b'x');
-    out.extend_from_slice(&nonce[..8]);
-    out.push(0);
     let capabilities = greeting.capabilities.to_le_bytes();
-    out.extend_from_slice(&capabilities[..2]);
-    out.push(UTF8MB4);
-    out.extend_from_slice(&2u16.to_le_bytes()); // SERVER_STATUS_AUTOCOMMIT
-    out.extend_from_slice(&capabilities[2..]);
-    out.push(u8::try_from(NONCE_LENGTH + 1).unwrap_or(21));
-    out.extend_from_slice(&[0u8; 10]);
-    out.extend_from_slice(&nonce[8..]);
-    out.push(0);
-    cstring(&mut out, &greeting.plugin);
+    let mut out = vec![PROTOCOL_VERSION];
+    out.cstring(&greeting.server_version)
+        .u32_le(greeting.connection_id)
+        .bytes(&nonce[..8])
+        .byte(0)
+        .bytes(&capabilities[..2])
+        .byte(UTF8MB4)
+        .u16_le(2) // SERVER_STATUS_AUTOCOMMIT
+        .bytes(&capabilities[2..])
+        .byte(u8::try_from(NONCE_LENGTH + 1).unwrap_or(21))
+        .bytes(&[0u8; 10])
+        .bytes(&nonce[8..])
+        .byte(0)
+        .cstring(&greeting.plugin);
     out
 }
 
@@ -148,12 +150,12 @@ pub fn decode_handshake(payload: &[u8]) -> Result<HandshakeV10> {
         )));
     }
     let server_version = cursor.cstring()?;
-    let connection_id = cursor.int32()?;
+    let connection_id = cursor.u32_le()?;
     let mut nonce = cursor.take(8)?.to_vec();
     cursor.skip(1)?;
-    let lower = cursor.int16()?;
+    let lower = cursor.u16_le()?;
     cursor.skip(3)?;
-    let upper = cursor.int16()?;
+    let upper = cursor.u16_le()?;
     let capabilities = u32::from(lower) | (u32::from(upper) << 16);
     let nonce_length = usize::from(cursor.byte()?);
     cursor.skip(10)?;
@@ -180,18 +182,18 @@ pub fn decode_handshake(payload: &[u8]) -> Result<HandshakeV10> {
 #[must_use]
 pub fn encode_response(response: &HandshakeResponse41) -> Vec<u8> {
     let mut out = Vec::new();
-    out.extend_from_slice(&response.capabilities.to_le_bytes());
-    out.extend_from_slice(&0x0100_0000u32.to_le_bytes()); // max packet size
-    out.push(UTF8MB4);
-    out.extend_from_slice(&[0u8; 23]);
-    cstring(&mut out, &response.user);
-    out.push(u8::try_from(response.auth_response.len()).unwrap_or(u8::MAX));
-    out.extend_from_slice(&response.auth_response);
+    out.u32_le(response.capabilities)
+        .u32_le(0x0100_0000) // max packet size
+        .byte(UTF8MB4)
+        .bytes(&[0u8; 23])
+        .cstring(&response.user)
+        .byte(u8::try_from(response.auth_response.len()).unwrap_or(u8::MAX))
+        .bytes(&response.auth_response);
     if response.capabilities & CLIENT_CONNECT_WITH_DB != 0 {
-        cstring(&mut out, &response.database);
+        out.cstring(&response.database);
     }
     if response.capabilities & CLIENT_PLUGIN_AUTH != 0 {
-        cstring(&mut out, &response.plugin);
+        out.cstring(&response.plugin);
     }
     out
 }
@@ -202,7 +204,7 @@ pub fn encode_response(response: &HandshakeResponse41) -> Vec<u8> {
 /// A client without protocol 4.1, or a payload that breaks off.
 pub fn decode_response(payload: &[u8]) -> Result<HandshakeResponse41> {
     let mut cursor = Cursor::new(payload);
-    let capabilities = cursor.int32()?;
+    let capabilities = cursor.u32_le()?;
     if capabilities & CLIENT_PROTOCOL_41 == 0 {
         return Err(protocol_error("a client without protocol 4.1"));
     }
@@ -246,7 +248,7 @@ pub fn decode_auth_switch(payload: &[u8]) -> Result<(String, Vec<u8>)> {
     let mut cursor = Cursor::new(payload);
     cursor.skip(1)?;
     let plugin = cursor.cstring()?;
-    let mut nonce = cursor.rest().to_vec();
+    let mut nonce = cursor.take_rest().to_vec();
     if nonce.last() == Some(&0) {
         nonce.pop();
     }
@@ -256,7 +258,7 @@ pub fn decode_auth_switch(payload: &[u8]) -> Result<(String, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sha1::hex;
+    use codec::hex;
 
     #[test]
     fn the_native_password_is_the_documented_scramble() {
@@ -264,13 +266,13 @@ mod tests {
         let scrambled = scramble("secret", &nonce);
         assert_eq!(scrambled.len(), DIGEST_LENGTH);
         let mut salted = nonce.clone();
-        salted.extend_from_slice(&sha1(&sha1(b"secret")));
-        let expected: Vec<u8> = sha1(b"secret")
+        salted.extend_from_slice(&digest(&digest(b"secret")));
+        let expected: Vec<u8> = digest(b"secret")
             .iter()
-            .zip(sha1(&salted))
+            .zip(digest(&salted))
             .map(|(a, b)| a ^ b)
             .collect();
-        assert_eq!(hex(&scrambled), hex(&expected));
+        assert_eq!(hex::encode(&scrambled), hex::encode(&expected));
         assert!(verify("secret", &nonce, &scrambled));
         assert!(!verify("wrong", &nonce, &scrambled));
         assert!(!verify("secret", &[0; 20], &scrambled), "another nonce");
@@ -318,7 +320,7 @@ mod tests {
     #[test]
     fn an_auth_switch_names_its_plugin_and_nonce() {
         let mut payload = vec![0xfe];
-        cstring(&mut payload, "caching_sha2_password");
+        payload.cstring("caching_sha2_password");
         payload.extend_from_slice(b"nonce-nonce-nonce-no\0");
         let (plugin, nonce) = decode_auth_switch(&payload).expect("switch");
         assert_eq!(plugin, "caching_sha2_password");

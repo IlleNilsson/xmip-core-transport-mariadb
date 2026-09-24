@@ -5,6 +5,11 @@ INSERT; the client/server protocol with native password authentication. A
 technology of
 [xmip-core-transport](https://github.com/IlleNilsson/xmip-core-transport).
 
+The backtick identifiers it writes and its far end reads are
+`xmip-core-library-codec`'s `sql` module, the one SQL quoting in the estate;
+which delimiter is this dialect's own. Its string literal, with the
+backslash escapes the server reads, is `MySQL`'s alone and written here.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it

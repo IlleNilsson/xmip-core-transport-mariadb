@@ -6,6 +6,7 @@ use std::io::{BufReader, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
+use codec::sql::Delimiter;
 use transport::error::{Result, TransportError, classify, protocol_error};
 use transport::socket;
 
@@ -251,7 +252,7 @@ pub fn quote_literal(text: &str) -> String {
 /// `name` as an identifier: in backticks, every backtick doubled.
 #[must_use]
 pub fn quote_identifier(name: &str) -> String {
-    format!("`{}`", name.replace('`', "``"))
+    Delimiter::BACKTICK.quote(name)
 }
 
 #[cfg(test)]

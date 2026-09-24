@@ -11,14 +11,13 @@
 //! Text that happens to be in one of those forms is read as bytes; that
 //! is the price of one column carrying both, and it is paid on purpose.
 
-use transport::hex::{hex, unhex};
 pub use transport::sql::is_text;
 
 /// `bytes` as the hexadecimal literal: `X'` then two lower-case digits a
 /// byte, then `'`. Unquoted, as a literal goes into a statement.
 #[must_use]
 pub fn hex_literal(bytes: &[u8]) -> String {
-    format!("X'{}'", hex(bytes))
+    format!("X'{}'", codec::hex::encode(bytes))
 }
 
 /// The bytes a value in a hex form names — `X'…'`, `x'…'` or `0x…` —
@@ -29,7 +28,7 @@ pub fn from_hex_literal(text: &str) -> Option<Vec<u8>> {
         Some(quoted) => quoted.strip_suffix('\'')?,
         None => text.strip_prefix("0x")?,
     };
-    unhex(digits).ok()
+    codec::hex::decode(digits).ok()
 }
 
 /// A column value as the bytes it carries: decoded when in a hex form,

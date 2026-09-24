@@ -5,6 +5,7 @@
 //! the server would undo undone here. The statement's shape is the
 //! capability's (`transport::sql`, ADR-0044); the dialect is here.
 
+use codec::sql::Delimiter;
 use transport::sql;
 
 use crate::hex::from_hex_literal;
@@ -61,9 +62,8 @@ fn literal(rest: &str) -> Option<(Vec<u8>, &str)> {
 /// One identifier, bare or in backticks, and what follows it.
 fn identifier(rest: &str) -> Option<(String, &str)> {
     let rest = rest.trim_start();
-    if let Some(quoted) = rest.strip_prefix('`') {
-        let end = quoted.find('`')?;
-        return Some((quoted[..end].to_string(), &quoted[end + 1..]));
+    if rest.starts_with('`') {
+        return Delimiter::BACKTICK.unquote_prefix(rest).ok();
     }
     let end = rest
         .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
@@ -84,6 +84,11 @@ mod tests {
         assert_eq!(
             parse_insert("insert into `In box` ( `Payload` ) values ( '' )"),
             Some(("In box".into(), "Payload".into(), Vec::new()))
+        );
+        assert_eq!(
+            parse_insert("INSERT INTO `in``box` (`a`) VALUES ('x')"),
+            Some(("in`box".into(), "a".into(), b"x".to_vec())),
+            "a doubled backtick is one, as quote_identifier writes it"
         );
         assert_eq!(
             parse_insert("INSERT INTO orders.inbox (payload) VALUES ('a\\nb''c\\\\d\\%e')"),
