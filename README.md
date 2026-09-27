@@ -30,6 +30,8 @@ Over the text protocol a BLOB comes back as raw bytes, so a binary
 column's receive query spells it out: `SELECT id, CONCAT('0x', HEX(payload))
 FROM inbox`.
 
+A Send Location inserts on a connection logged in once per server and database and kept (`transport::Pool`); the login is the transport capability's `Login`. Until 2026-09-27 every insert logged in and quit.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it

@@ -52,25 +52,6 @@ pub const CAPABILITIES: u32 =
 /// utf8mb4, general collation.
 pub const UTF8MB4: u8 = 45;
 
-/// Who logs in, and with what.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Login {
-    pub user: String,
-    /// Empty where the account has none.
-    pub password: String,
-}
-
-impl Login {
-    /// `user` with `password`.
-    #[must_use]
-    pub fn new(user: impl Into<String>, password: impl Into<String>) -> Self {
-        Self {
-            user: user.into(),
-            password: password.into(),
-        }
-    }
-}
-
 /// What a server opens with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HandshakeV10 {

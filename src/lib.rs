@@ -50,7 +50,6 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 pub use client::{Client, QueryResult, quote_literal};
-pub use handshake::Login;
 pub use session::{Answer, Event, Session};
 use transport::claim::{NoNativeClaim, ResourceClaim};
 use transport::error::{Result, protocol_error};
@@ -58,7 +57,7 @@ use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
 use transport::sql::{COLUMN, Column, ENCODING};
-use transport::{Arrived, Configured, Directions, Transport};
+use transport::{Arrived, Configured, Directions, Login, Pool, Transport};
 
 use insert::DIALECT;
 use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
@@ -81,6 +80,9 @@ pub struct MysqlTransport {
     query: String,
     column: Column,
     timeout: Option<Duration>,
+    /// The connections a send inserts on, logged in once per server and
+    /// database and kept.
+    connections: Pool<Client>,
 }
 
 impl MysqlTransport {
@@ -99,6 +101,7 @@ impl MysqlTransport {
             query: DEFAULT_QUERY.to_string(),
             column: Column::Binary,
             timeout: None,
+            connections: Pool::new(),
         }
     }
 
@@ -196,15 +199,20 @@ impl Transport for MysqlTransport {
     }
 
     /// Insert the bytes as one column of one row: as a hexadecimal
-    /// literal, or as text where the column is declared to hold it.
+    /// literal, or as text where the column is declared to hold it — on the
+    /// connection kept for the server and database, logged in on the first
+    /// send to them.
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
         let to = DIALECT.destination(target, &self.server, &self.database)?;
         let literal = self
             .column
             .literal(bytes, quote_literal, hex::hex_literal)?;
-        let mut client = self.connect_to(to.server, to.catalog)?;
-        client.execute(&DIALECT.insert(to.table, to.column, &literal))?;
-        client.close()
+        let insert = DIALECT.insert(to.table, to.column, &literal);
+        self.connections.exchange(
+            &format!("{}/{}", to.server, to.catalog),
+            || self.connect_to(to.server, to.catalog),
+            |client| client.execute(&insert).map(|_| ()),
+        )
     }
 
     /// Rows are artefacts, and one receive holds no transaction to claim
@@ -280,14 +288,10 @@ impl MysqlTransport {
 
 impl Accepting for MysqlTransport {
     fn take_one(self, listener: &TcpListener) -> Result<Arrived> {
-        let mut session = self.accept_one(listener)?;
-        let arrived = session
+        // The client keeps its connection for the next insert.
+        self.accept_one(listener)?
             .next_insert()?
-            .ok_or_else(|| protocol_error("the client closed without inserting"))?;
-        // Read the quit that follows, so the goodbye is taken rather than
-        // written into a closed socket.
-        session.next_insert()?;
-        Ok(arrived)
+            .ok_or_else(|| protocol_error("the client closed without inserting"))
     }
 }
 
@@ -429,20 +433,19 @@ mod tests {
                 .send("inbox/payload", b"x");
             Ok::<_, TransportError>((bad_target, refused, nobody))
         });
+        // One server and database, so one login for all three inserts.
         let mut session = far_end.accept_one(&listener).expect("accepting");
         let first = session.next_insert().expect("first").expect("one");
         assert_eq!(first.bytes, b"it's \\here");
         assert!(first.origin_uri.ends_with("/orders/inbox/payload"));
-        assert!(session.next_insert().expect("closed").is_none());
-        let mut session = far_end.accept_one(&listener).expect("second");
         let second = session.next_insert().expect("second").expect("one");
         assert!(second.bytes.is_empty());
         assert!(second.origin_uri.ends_with("/orders/outbox/body"));
-        let session = far_end.accept_one(&listener).expect("third");
-        let events = session.serve().expect("served");
-        assert!(
-            matches!(&events[..], [Event::Inserted(binary)] if binary.bytes == [0xff, 0xfe]),
-            "a binary column, so the hex literal: {events:?}"
+        let binary = session.next_insert().expect("third").expect("one");
+        assert_eq!(
+            binary.bytes,
+            [0xff, 0xfe],
+            "a binary column, so the hex literal"
         );
         let error = far_end.accept_one(&listener).err().expect("wrong password");
         assert!(error.message.contains("Access denied for user 'xmip'"));
@@ -458,6 +461,41 @@ mod tests {
         assert!(far_end.claims().is_some(), "rows are artefacts");
         assert_eq!(far_end.name(), "mysql");
         assert_eq!(far_end.directions(), Directions::BOTH);
+    }
+
+    #[test]
+    fn a_thousand_inserts_log_in_once_and_a_connection_the_server_closed_is_replaced() {
+        const SENDS: usize = 1000;
+        let far_end = MysqlTransport::new("127.0.0.1:0", "orders", "xmip")
+            .with_password("secret")
+            .timing_out_after(secs(5));
+        let (listener, address) = far_end.bind().expect("binding");
+        let near = MysqlTransport::new(address, "orders", "xmip")
+            .with_password("secret")
+            .timing_out_after(secs(5));
+        let sending = near.clone();
+        let sender = std::thread::spawn(move || {
+            let began = std::time::Instant::now();
+            for n in 0..SENDS {
+                sending.send("inbox/payload", n.to_string().as_bytes())?;
+            }
+            let took = began.elapsed();
+            // Generous for a debug build under load: a millisecond an insert.
+            assert!(took < Duration::from_millis(SENDS as u64), "{took:?}");
+            sending.send("inbox/payload", b"after the close")
+        });
+        // One handshake for every insert: one session accepted.
+        let mut session = far_end.accept_one(&listener).expect("accepting");
+        for n in 0..SENDS {
+            let inserted = session.next_insert().expect("insert").expect("one");
+            assert_eq!(inserted.bytes, n.to_string().as_bytes());
+        }
+        drop(session);
+        let mut again = far_end.accept_one(&listener).expect("a new login");
+        let last = again.next_insert().expect("insert").expect("one");
+        assert_eq!(last.bytes, b"after the close");
+        sender.join().expect("thread").expect("sending");
+        assert_eq!(near.connections.opened(), 2);
     }
 
     #[test]

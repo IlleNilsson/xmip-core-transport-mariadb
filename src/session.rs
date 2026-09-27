@@ -14,14 +14,13 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use transport::Arrived;
 use transport::error::{Result, TransportError, classify, protocol_error};
-use transport::socket;
 use transport::sql::{self, Answering, Column, Inserted, Rows};
+use transport::{Arrived, Login, socket};
 
 use crate::handshake::{
-    CAPABILITIES, HandshakeV10, Login, NATIVE_PASSWORD, NONCE_LENGTH, decode_response,
-    encode_handshake, verify,
+    CAPABILITIES, HandshakeV10, NATIVE_PASSWORD, NONCE_LENGTH, decode_response, encode_handshake,
+    verify,
 };
 use crate::insert::parse_insert;
 use crate::result::{Reply, encode_column, encode_column_count, encode_reply, encode_row};

@@ -7,11 +7,12 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use transport::error::{Result, TransportError, classify, protocol_error};
-use transport::socket;
+use transport::pool::{Pooled, alive};
+use transport::{Login, socket};
 
 use crate::handshake::{
-    CAPABILITIES, CLIENT_PROTOCOL_41, HandshakeResponse41, Login, NATIVE_PASSWORD,
-    decode_auth_switch, decode_handshake, encode_response, scramble,
+    CAPABILITIES, CLIENT_PROTOCOL_41, HandshakeResponse41, NATIVE_PASSWORD, decode_auth_switch,
+    decode_handshake, encode_response, scramble,
 };
 use crate::result::{
     EOF_HEADER, ERR_HEADER, Reply, decode_column, decode_column_count, decode_in_result_set,
@@ -32,6 +33,8 @@ pub struct QueryResult {
     pub affected_rows: u64,
 }
 
+/// One logged-in connection, kept between statements while the server
+/// keeps it open.
 pub struct Client {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
@@ -196,6 +199,15 @@ impl Client {
         self.writer
             .flush()
             .map_err(|e| classify("flushing a packet", &e))
+    }
+}
+
+impl Pooled for Client {
+    /// While the server has not closed the connection — its `wait_timeout`
+    /// closes an idle one. Each `COM_QUERY` is read to its end, so nothing
+    /// of one is left for the next.
+    fn usable(&mut self) -> bool {
+        alive(&self.writer)
     }
 }
 
