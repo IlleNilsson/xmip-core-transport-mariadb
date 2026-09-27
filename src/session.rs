@@ -5,7 +5,8 @@
 //! with a fresh nonce, the native password checked against the one login
 //! it expects — and answers each query from a closure or from one fixed
 //! table: any SELECT gets the table's rows, an INSERT of one column is
-//! recorded as a Stream, anything else is completed with OK. Planning,
+//! recorded as a Stream — a string literal's text in the column's declared
+//! form — anything else is completed with OK. Planning,
 //! storage and SQL are a database's.
 
 use std::io::{BufReader, Write};
@@ -16,7 +17,7 @@ use std::time::{Duration, SystemTime};
 use transport::Arrived;
 use transport::error::{Result, TransportError, classify, protocol_error};
 use transport::socket;
-use transport::sql::{self, Answering, Inserted, Rows};
+use transport::sql::{self, Answering, Column, Inserted, Rows};
 
 use crate::handshake::{
     CAPABILITIES, HandshakeV10, Login, NATIVE_PASSWORD, NONCE_LENGTH, decode_response,
@@ -76,6 +77,7 @@ pub struct Session {
     columns: Vec<String>,
     rows: Rows<String>,
     answering: Option<Answering<Answer>>,
+    column: Column,
 }
 
 impl Session {
@@ -103,6 +105,7 @@ impl Session {
             columns: Vec::new(),
             rows: Vec::new(),
             answering: None,
+            column: Column::Binary,
         };
         let greeting = HandshakeV10 {
             server_version: SERVER_VERSION.to_string(),
@@ -158,6 +161,14 @@ impl Session {
     #[must_use]
     pub fn database(&self) -> &str {
         &self.database
+    }
+
+    /// What the column an INSERT names holds: bytes unless declared
+    /// otherwise.
+    #[must_use]
+    pub const fn holding(mut self, column: Column) -> Self {
+        self.column = column;
+        self
     }
 
     /// Answer any SELECT with these `columns` and `rows`.
@@ -238,7 +249,7 @@ impl Session {
                         format!("mysql://{}/{}/{table}/{column}", self.peer, self.database);
                     (
                         Answer::Complete(1),
-                        Event::Inserted(Arrived::new(origin, value)),
+                        Event::Inserted(Arrived::new(origin, self.column.stored(value))),
                     )
                 }
                 None => (

@@ -6,25 +6,26 @@
 //! capability's (`transport::sql`, ADR-0044); the dialect is here.
 
 use codec::sql::Delimiter;
-use transport::sql;
+use transport::sql::{self, Literal};
 
 use crate::hex::from_hex_literal;
 
 /// `INSERT INTO <table> (<column>) VALUES (<literal>)` taken apart: the
-/// table, the column and the value — a quoted string with its escapes
-/// undone, or the bytes of an `X'…'` literal. Identifiers may be in
-/// backticks; anything else is `None`.
+/// table, the column and the value — a quoted string's text with its
+/// escapes undone, or the bytes of an `X'…'` literal. Identifiers may be
+/// in backticks; anything else is `None`.
 #[must_use]
-pub fn parse_insert(statement: &str) -> Option<(String, String, Vec<u8>)> {
+pub fn parse_insert(statement: &str) -> Option<(String, String, Literal)> {
     sql::parse_insert(statement, identifier, literal)
 }
 
 /// One literal — `'…'` with backslash escapes, or `X'…'` — and what
 /// follows it.
-fn literal(rest: &str) -> Option<(Vec<u8>, &str)> {
+fn literal(rest: &str) -> Option<(Literal, &str)> {
     if rest.starts_with("X'") || rest.starts_with("x'") {
         let end = rest[2..].find('\'')? + 3;
-        return Some((from_hex_literal(&rest[..end])?, &rest[end..]));
+        let bytes = from_hex_literal(&rest[..end])?;
+        return Some((Literal::Bytes(bytes), &rest[end..]));
     }
     let mut chars = rest.strip_prefix('\'')?.char_indices().peekable();
     let mut value = String::new();
@@ -35,7 +36,7 @@ fn literal(rest: &str) -> Option<(Vec<u8>, &str)> {
                 chars.next();
                 value.push('\'');
             }
-            '\'' => return Some((value.into_bytes(), &rest[at + 2..])),
+            '\'' => return Some((Literal::Text(value), &rest[at + 2..])),
             '\\' => {
                 let escaped = chars.next()?.1;
                 let unescaped = match escaped {
@@ -75,19 +76,23 @@ fn identifier(rest: &str) -> Option<(String, &str)> {
 mod tests {
     use super::*;
 
+    fn text(value: &str) -> Literal {
+        Literal::Text(value.into())
+    }
+
     #[test]
     fn an_insert_of_one_column_is_taken_apart() {
         assert_eq!(
             parse_insert("INSERT INTO inbox (payload) VALUES ('it\\'s here');"),
-            Some(("inbox".into(), "payload".into(), b"it's here".to_vec()))
+            Some(("inbox".into(), "payload".into(), text("it's here")))
         );
         assert_eq!(
             parse_insert("insert into `In box` ( `Payload` ) values ( '' )"),
-            Some(("In box".into(), "Payload".into(), Vec::new()))
+            Some(("In box".into(), "Payload".into(), text("")))
         );
         assert_eq!(
             parse_insert("INSERT INTO `in``box` (`a`) VALUES ('x')"),
-            Some(("in`box".into(), "a".into(), b"x".to_vec())),
+            Some(("in`box".into(), "a".into(), text("x"))),
             "a doubled backtick is one, as quote_identifier writes it"
         );
         assert_eq!(
@@ -95,12 +100,16 @@ mod tests {
             Some((
                 "orders.inbox".into(),
                 "payload".into(),
-                b"a\nb'c\\d\\%e".to_vec()
+                text("a\nb'c\\d\\%e")
             ))
         );
         assert_eq!(
             parse_insert("INSERT INTO inbox (payload) VALUES (X'fffe')"),
-            Some(("inbox".into(), "payload".into(), vec![0xff, 0xfe]))
+            Some((
+                "inbox".into(),
+                "payload".into(),
+                Literal::Bytes(vec![0xff, 0xfe])
+            ))
         );
         assert!(parse_insert("INSERT INTO inbox (a, b) VALUES ('x', 'y')").is_none());
         assert!(parse_insert("INSERT INTO inbox (a) VALUES ('open").is_none());

@@ -9,9 +9,14 @@
 //! producer inserts, an integrator polls. A Receive Location runs its
 //! query — `SELECT id, payload FROM inbox ORDER BY id` unless told
 //! otherwise — and hands each row up; a Send Location inserts the Stream
-//! as one column of one row — as text when the Stream is UTF-8 without a
-//! NUL, as an `X'…'` hexadecimal literal otherwise, and a value in a hex
-//! form is the bytes again on the way back (`hex.rs`). What is spoken is
+//! as one column of one row. What the column holds is the Location's to
+//! declare, never the bytes' (ADR-0038): `column = "binary"`, the default,
+//! inserts every Stream as an `X'…'` hexadecimal literal and reads a value
+//! back from a hex form (`hex.rs`); `column = "text"` decodes the Stream
+//! strictly in its `encoding` — `utf-8` unless another Unicode form is
+//! named — inserts it as a string literal, and encodes a value read back
+//! to that form. A Stream that is not its declared form is refused, never
+//! repaired; so is a row value that is not UTF-8. What is spoken is
 //! the client/server protocol as every client since 4.1 speaks it, on
 //! port 3306: the greeting, a response with the password scrambled the
 //! `mysql_native_password` way (`handshake.rs`, SHA-1 from codec),
@@ -52,7 +57,9 @@ use transport::error::{Result, TransportError, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::{Arrived, Directions, Transport};
+use transport::sql::{COLUMN, Column, ENCODING};
+use transport::{Arrived, Configured, Directions, Transport};
+use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
 
 /// What a Receive Location runs unless told otherwise.
 pub const DEFAULT_QUERY: &str = "SELECT id, payload FROM inbox ORDER BY id";
@@ -70,6 +77,7 @@ pub struct MysqlTransport {
     database: String,
     login: Login,
     query: String,
+    column: Column,
     timeout: Option<Duration>,
 }
 
@@ -87,6 +95,7 @@ impl MysqlTransport {
             database: database.into(),
             login: Login::new(user, ""),
             query: DEFAULT_QUERY.to_string(),
+            column: Column::Binary,
             timeout: None,
         }
     }
@@ -103,6 +112,13 @@ impl MysqlTransport {
     #[must_use]
     pub fn with_query(mut self, query: impl Into<String>) -> Self {
         self.query = query.into();
+        self
+    }
+
+    /// What the payload column holds: bytes unless declared otherwise.
+    #[must_use]
+    pub const fn holding(mut self, column: Column) -> Self {
+        self.column = column;
         self
     }
 
@@ -140,6 +156,7 @@ impl MysqlTransport {
     /// Where the connection could not be accepted or the login failed.
     pub fn accept_one(&self, listener: &TcpListener) -> Result<Session> {
         Session::accept(listener, &self.login, self.timeout)
+            .map(|session| session.holding(self.column))
     }
 
     /// Where a target names the server, database, table and column, or
@@ -184,23 +201,25 @@ impl Transport for MysqlTransport {
                 .cloned()
                 .flatten()
                 .unwrap_or_else(|| index.to_string());
-            let value = row.last().cloned().flatten().unwrap_or_default();
+            let bytes = match row.last().cloned().flatten() {
+                Some(value) => self.column.bytes(&value, hex::from_hex_literal)?,
+                None => Vec::new(),
+            };
             arrived.push(Arrived::new(
                 format!("mysql://{}/{}?row={name}", self.server, self.database),
-                hex::column_bytes(value),
+                bytes,
             ));
         }
         Ok(arrived)
     }
 
-    /// Insert the bytes as one column of one row: text as text, anything
-    /// else as a hexadecimal literal.
+    /// Insert the bytes as one column of one row: as a hexadecimal
+    /// literal, or as text where the column is declared to hold it.
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
         let (server, database, table, column) = self.resolve(target)?;
-        let literal = match std::str::from_utf8(bytes) {
-            Ok(text) if transport::sql::is_text(bytes) => quote_literal(text),
-            _ => hex::hex_literal(bytes),
-        };
+        let literal = self
+            .column
+            .literal(bytes, quote_literal, hex::hex_literal)?;
         let mut client = self.connect_to(server, database)?;
         let sql = format!(
             "INSERT INTO {} ({}) VALUES ({})",
@@ -216,6 +235,60 @@ impl Transport for MysqlTransport {
     /// one in.
     fn claims(&self) -> Option<&dyn ResourceClaim> {
         Some(&NoNativeClaim)
+    }
+}
+
+impl Configured for MysqlTransport {
+    /// The address is the server's host and port: where a Location connects.
+    const SETTINGS: &'static Settings = &Settings {
+        technology: env!("CARGO_PKG_NAME"),
+        settings: &[
+            Setting {
+                name: "database",
+                kind: Kind::Text,
+                presence: Presence::Required,
+                meaning: "The database a Location logs in to and reads or inserts into.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "user",
+                kind: Kind::Text,
+                presence: Presence::Required,
+                meaning: "The user a Location logs in as.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "query",
+                kind: Kind::Text,
+                presence: Presence::Default(Fixed::Text(DEFAULT_QUERY)),
+                meaning: "The query a receive runs: the first column names the row, the last \
+                          is the Stream.",
+                applies: Applies::Receive,
+            },
+            COLUMN,
+            ENCODING,
+            Setting {
+                name: "timeout",
+                kind: Kind::Duration,
+                presence: Presence::Optional,
+                meaning: "How long a server that stops mid-packet is waited on; unbounded \
+                          when left out.",
+                applies: Applies::Both,
+            },
+        ],
+    };
+
+    /// The password comes through the Location's credentials, never a
+    /// setting.
+    fn configured(address: &str, settings: &Read) -> Result<Self> {
+        let mut transport = Self::new(address, settings.text("database"), settings.text("user"));
+        if let Some(query) = settings.optional_text("query") {
+            transport = transport.with_query(query);
+        }
+        if let Some(timeout) = settings.optional_duration("timeout") {
+            transport = transport.timing_out_after(timeout);
+        }
+        Ok(transport.holding(Column::configured(settings)?))
     }
 }
 
@@ -247,8 +320,8 @@ impl Loopback for MysqlTransport {
         Ok(Box::new(Listening::new(self.clone(), self.bind()?)))
     }
 
-    /// INSERT the payload as one column of one row — text as text, anything
-    /// else as an `X'…'` literal — from a fresh near end logging in to
+    /// INSERT the payload as one column of one row, as the column is
+    /// declared to hold it, from a fresh near end logging in to
     /// `address` as this transport does.
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
         let near = Self {
@@ -264,10 +337,44 @@ mod tests {
     use super::*;
     use crate::handshake::{CAPABILITIES, HandshakeV10, NATIVE_PASSWORD, encode_handshake};
     use crate::wire::{MysqlWrite, frame};
+    use codec::unicode::Form;
     use transport::payload::edge_payloads;
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
+    }
+
+    #[test]
+    fn mysql_declares_its_settings_and_reads_through_them() {
+        use xcore::settings::Given;
+        assert_eq!(MysqlTransport::SETTINGS.problems(), Vec::<String>::new());
+        let text = |name: &str, value: &str| (name.to_string(), Given::Text(value.to_string()));
+        let given = [
+            text("database", "orders"),
+            text("user", "xmip"),
+            text("timeout", "2s"),
+        ];
+        let built = MysqlTransport::open("db:3306", Applies::Receive, &given).expect("built");
+        assert_eq!(built.server, "db:3306");
+        assert_eq!(built.database, "orders");
+        assert_eq!(built.query, DEFAULT_QUERY);
+        assert_eq!(built.timeout, Some(secs(2)));
+        assert_eq!(built.column, Column::Binary, "bytes unless declared");
+        let texts = [
+            text("database", "orders"),
+            text("user", "xmip"),
+            text("column", "text"),
+        ];
+        let built = MysqlTransport::open("db:3306", Applies::Send, &texts).expect("text");
+        assert_eq!(built.column, Column::Text(Form::Utf8), "utf-8 unless named");
+        let Err(refused) = MysqlTransport::open("db:3306", Applies::Send, &given[1..]) else {
+            panic!("database is required");
+        };
+        assert!(
+            refused.message.contains("\"database\""),
+            "{}",
+            refused.message
+        );
     }
 
     #[test]
@@ -277,23 +384,22 @@ mod tests {
             .timing_out_after(secs(2));
         let (listener, address) = far_end.bind().expect("binding");
         let receiver = std::thread::spawn(move || {
-            MysqlTransport::new(address, "orders", "xmip")
+            let near = MysqlTransport::new(address, "orders", "xmip")
                 .with_password("secret")
                 .with_query("SELECT id, kind, payload FROM inbox ORDER BY id")
-                .timing_out_after(secs(2))
-                .receive()
+                .timing_out_after(secs(2));
+            let bytes = near.receive();
+            (bytes, near.holding(Column::Text(Form::Utf8)).receive())
         });
+        let rows: [&[Option<&str>]; 3] = [
+            &[Some("41"), Some("order"), Some("X'4953412a30302a'")],
+            &[Some("42"), None, Some("0xfffe")],
+            &[None, Some(""), None],
+        ];
         let mut session = far_end
             .accept_one(&listener)
             .expect("accepting")
-            .with_table(
-                &["id", "kind", "payload"],
-                &[
-                    &[Some("41"), Some("order"), Some("ISA*00*")],
-                    &[Some("42"), None, Some("0xfffe")],
-                    &[None, Some(""), None],
-                ],
-            );
+            .with_table(&["id", "kind", "payload"], &rows);
         assert_eq!(session.user(), "xmip");
         assert_eq!(session.database(), "orders");
         let event = session.next_event().expect("query").expect("one");
@@ -302,7 +408,15 @@ mod tests {
             Event::Selected("SELECT id, kind, payload FROM inbox ORDER BY id".into())
         );
         assert!(session.next_event().expect("quit").is_none());
-        let arrived = receiver.join().expect("thread").expect("receiving");
+        let mut session = far_end
+            .accept_one(&listener)
+            .expect("the text column")
+            .with_table(&["id", "payload"], &[&[Some("43"), Some("0xfffe")]]);
+        while session.next_event().expect("event").is_some() {}
+        let (arrived, text) = receiver.join().expect("thread");
+        let text = text.expect("a text column");
+        assert_eq!(text[0].bytes, b"0xfffe", "text, never read as a hex form");
+        let arrived = arrived.expect("receiving");
         assert_eq!(arrived.len(), 3);
         assert_eq!(arrived[0].bytes, b"ISA*00*");
         assert!(arrived[0].origin_uri.ends_with("/orders?row=41"));
@@ -351,7 +465,7 @@ mod tests {
         let events = session.serve().expect("served");
         assert!(
             matches!(&events[..], [Event::Inserted(binary)] if binary.bytes == [0xff, 0xfe]),
-            "not text, so the hex literal: {events:?}"
+            "a binary column, so the hex literal: {events:?}"
         );
         let error = far_end.accept_one(&listener).err().expect("wrong password");
         assert!(error.message.contains("Access denied for user 'xmip'"));
@@ -367,6 +481,21 @@ mod tests {
         assert!(far_end.claims().is_some(), "rows are artefacts");
         assert_eq!(far_end.name(), "mysql");
         assert_eq!(far_end.directions(), Directions::BOTH);
+    }
+
+    #[test]
+    fn a_text_column_refuses_a_stream_that_is_not_its_encoding() {
+        let near =
+            MysqlTransport::new("127.0.0.1:1", "orders", "xmip").holding(Column::Text(Form::Utf8));
+        let refused = near
+            .send("inbox/payload", &[0xff, 0xfe])
+            .expect_err("not UTF-8");
+        assert!(!refused.retryable);
+        assert!(
+            refused.message.contains("utf-8 text"),
+            "{}",
+            refused.message
+        );
     }
 
     #[test]

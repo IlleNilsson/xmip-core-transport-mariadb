@@ -18,6 +18,9 @@ path = "src/lib.rs"
 # (repository-model.md). The protocol is a three-byte length, a sequence
 # byte and length-prefixed fields.
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
+# The settings this technology declares (xcore::settings), read through
+# transport::Configured (ADR-0064, amendment 2026-09-26).
+xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 # The estate's encoding primitives: the byte cursor and writer the fields
 # are read and written over, hex for the binary literal, SHA-1 for the
 # native password, and SQL's delimited literals and identifiers, written
@@ -39,3 +42,6 @@ missing_errors_doc = "warn"
 missing_panics_doc = "warn"
 unwrap_used = "warn"
 expect_used = "allow"
+
+[profile.dev.package."*"]
+opt-level = 3

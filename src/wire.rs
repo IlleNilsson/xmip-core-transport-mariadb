@@ -16,6 +16,7 @@
 use std::io::Read;
 
 use codec::cursor::Cursor;
+use codec::unicode::Form;
 use codec::writer::ByteWriter;
 use transport::error::{Result, classify, protocol_error};
 
@@ -53,11 +54,12 @@ pub fn encode_command(command: &Command) -> Vec<u8> {
 /// The command a payload carries.
 ///
 /// # Errors
-/// An empty payload, or a command this crate does not serve.
+/// An empty payload, a command this crate does not serve, or a query
+/// that is not UTF-8.
 pub fn decode_command(payload: &[u8]) -> Result<Command> {
     match payload.split_first() {
         Some((&COM_QUIT, _)) => Ok(Command::Quit),
-        Some((&COM_QUERY, sql)) => Ok(Command::Query(String::from_utf8_lossy(sql).into_owned())),
+        Some((&COM_QUERY, sql)) => Ok(Command::Query(Form::Utf8.decode(sql)?)),
         Some((other, _)) => Err(protocol_error(format!(
             "command {other:#04x} is not one this crate serves"
         ))),
@@ -134,16 +136,16 @@ pub trait Mysql {
     /// NULL marker or one the encoding does not use.
     fn lenenc_int(&mut self) -> Result<u64>;
 
-    /// The next length-encoded string, lossily UTF-8.
+    /// The next length-encoded string, strictly UTF-8.
     ///
     /// # Errors
-    /// The length or the string breaks off.
+    /// The length or the string breaks off, or it is not UTF-8.
     fn lenenc_str(&mut self) -> Result<String>;
 
-    /// The next NUL-terminated string, lossily UTF-8.
+    /// The next NUL-terminated string, strictly UTF-8.
     ///
     /// # Errors
-    /// No NUL before the end.
+    /// No NUL before the end, or it is not UTF-8.
     fn cstring(&mut self) -> Result<String>;
 }
 
@@ -168,11 +170,11 @@ impl Mysql for Cursor<'_> {
     fn lenenc_str(&mut self) -> Result<String> {
         let length = usize::try_from(self.lenenc_int()?)
             .map_err(|_| protocol_error("a string longer than memory"))?;
-        Ok(String::from_utf8_lossy(self.take(length)?).into_owned())
+        Ok(Form::Utf8.decode(self.take(length)?)?)
     }
 
     fn cstring(&mut self) -> Result<String> {
-        Ok(String::from_utf8_lossy(self.take_until(0)?).into_owned())
+        Ok(Form::Utf8.decode(self.take_until(0)?)?)
     }
 }
 
