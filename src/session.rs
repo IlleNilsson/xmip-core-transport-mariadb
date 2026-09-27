@@ -12,7 +12,7 @@
 use std::io::{BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use transport::Arrived;
 use transport::error::{Result, TransportError, classify, protocol_error};
@@ -110,7 +110,7 @@ impl Session {
         let greeting = HandshakeV10 {
             server_version: SERVER_VERSION.to_string(),
             connection_id: CONNECTIONS.fetch_add(1, Ordering::Relaxed),
-            nonce: fresh_nonce(&peer),
+            nonce: fresh_nonce(),
             capabilities: CAPABILITIES,
             plugin: NATIVE_PASSWORD.to_string(),
         };
@@ -312,18 +312,13 @@ impl Session {
 /// Ids handed out, one a connection.
 static CONNECTIONS: AtomicU32 = AtomicU32::new(1);
 
-/// Twenty printable bytes no two sessions share: the SHA-1 of the clock,
-/// the peer and a counter, each byte folded into `!`..`~` the way a
-/// server does so no NUL lands in a field a NUL ends.
-fn fresh_nonce(peer: &SocketAddr) -> Vec<u8> {
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |since| since.as_nanos());
-    let seed = format!("{nanos}:{peer}:{}", CONNECTIONS.load(Ordering::Relaxed));
-    codec::sha1::digest(seed.as_bytes())
+/// Twenty printable random bytes: the challenge a password is scrambled
+/// against, each byte folded into `!`..`~` the way a server does so no NUL
+/// lands in a field a NUL ends.
+fn fresh_nonce() -> Vec<u8> {
+    codec::random::array::<NONCE_LENGTH>()
         .iter()
         .map(|byte| b'!' + byte % 94)
-        .take(NONCE_LENGTH)
         .collect()
 }
 
@@ -349,11 +344,9 @@ mod tests {
 
     #[test]
     fn a_nonce_is_printable_and_fresh() {
-        let peer: SocketAddr = "127.0.0.1:3306".parse().expect("address");
-        let first = fresh_nonce(&peer);
+        let first = fresh_nonce();
         assert_eq!(first.len(), NONCE_LENGTH);
         assert!(first.iter().all(|b| (b'!'..=b'~').contains(b)));
-        CONNECTIONS.fetch_add(1, Ordering::Relaxed);
-        assert_ne!(first, fresh_nonce(&peer));
+        assert_ne!(first, fresh_nonce());
     }
 }

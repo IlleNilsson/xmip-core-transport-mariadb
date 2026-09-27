@@ -111,7 +111,7 @@ pub fn scramble(password: &str, nonce: &[u8]) -> Vec<u8> {
 /// True when `response` is `password` scrambled with `nonce`.
 #[must_use]
 pub fn verify(password: &str, nonce: &[u8], response: &[u8]) -> bool {
-    scramble(password, nonce) == response
+    codec::constant_time::equal(&scramble(password, nonce), response)
 }
 
 /// `greeting` as a payload.

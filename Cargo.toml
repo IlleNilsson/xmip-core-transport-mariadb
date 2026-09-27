@@ -26,6 +26,9 @@ xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core
 # native password, and SQL's delimited literals and identifiers, written
 # and read once for every dialect; which delimiter is this one's own.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
+# The most a connection is read for: the ceiling a payload's packets are
+# joined under (`net::MAX_BODY`).
+net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
 
 [dev-dependencies]
 # The loopback payloads the tests drive, from the capability's test

@@ -18,12 +18,12 @@ use std::io::Read;
 use codec::cursor::Cursor;
 use codec::unicode::Form;
 use codec::writer::ByteWriter;
+use net::MAX_BODY;
+use transport::ceiling;
 use transport::error::{Result, classify, protocol_error};
 
 /// The most one packet carries; a longer payload continues in the next.
 pub const MAX_PACKET: usize = 0xff_ffff;
-/// The most one payload may be, packets joined.
-pub const MAX_PAYLOAD: usize = 64 * 1024 * 1024;
 
 /// The client is done.
 pub const COM_QUIT: u8 = 0x01;
@@ -89,7 +89,7 @@ pub fn frame(sequence: &mut u8, payload: &[u8]) -> Vec<u8> {
 /// bytes, or `None` when the peer closed before a header.
 ///
 /// # Errors
-/// A read that failed, or a payload over [`MAX_PAYLOAD`].
+/// A read that failed, or a payload over `net::MAX_BODY`.
 pub fn read_packet(reader: &mut impl Read) -> Result<Option<(u8, Vec<u8>)>> {
     let mut payload = Vec::new();
     let mut first = None;
@@ -112,9 +112,11 @@ pub fn read_packet(reader: &mut impl Read) -> Result<Option<(u8, Vec<u8>)>> {
         if first.is_none() {
             first = Some(header[3]);
         }
-        if payload.len() + length > MAX_PAYLOAD {
-            return Err(protocol_error("a payload over what Xmip will read"));
-        }
+        ceiling::within(
+            payload.len() + length,
+            MAX_BODY,
+            "Xmip reads in one payload",
+        )?;
         let start = payload.len();
         payload.resize(start + length, 0);
         reader

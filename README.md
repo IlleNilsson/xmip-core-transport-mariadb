@@ -10,6 +10,12 @@ The backtick identifiers it writes and its far end reads are
 which delimiter is this dialect's own. Its string literal, with the
 backslash escapes the server reads, is `MySQL`'s alone and written here.
 
+Where a send target puts its row — `<scheme>://host:port/<catalog>/<table>/<column>`,
+`host:port/<catalog>/<table>/<column>` or `<table>/<column>` — and the one
+INSERT, its table and column always quoted identifiers so a target can name
+nothing but them, are `xmip-core-transport`'s `sql` module; this crate hands
+it its `DIALECT`: the schemes `mysql` and `mariadb`, a database, backticks.
+
 The payload column holds bytes unless the Location declares otherwise (ADR-0038:
 a payload is bytes). `column = "binary"`, the default, writes every Stream in
 the dialect's binary form (an `X'…'` literal) and reads a value back only from that form;

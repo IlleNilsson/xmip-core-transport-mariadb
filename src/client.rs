@@ -6,7 +6,6 @@ use std::io::{BufReader, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-use codec::sql::Delimiter;
 use transport::error::{Result, TransportError, classify, protocol_error};
 use transport::socket;
 
@@ -249,12 +248,6 @@ pub fn quote_literal(text: &str) -> String {
     out
 }
 
-/// `name` as an identifier: in backticks, every backtick doubled.
-#[must_use]
-pub fn quote_identifier(name: &str) -> String {
-    Delimiter::BACKTICK.quote(name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +258,7 @@ mod tests {
         assert_eq!(quote_literal("back\\slash"), "'back\\\\slash'");
         assert_eq!(quote_literal("a\nb\r\0\u{1a}"), "'a\\nb\\r\\0\\Z'");
         assert_eq!(quote_literal(""), "''");
+        let quote_identifier = |name| crate::insert::DIALECT.quote_identifier(name);
         assert_eq!(quote_identifier("in`box"), "`in``box`");
         assert_eq!(quote_identifier("Inbox"), "`Inbox`");
     }

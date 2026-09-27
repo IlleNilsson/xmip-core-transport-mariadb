@@ -6,9 +6,19 @@
 //! capability's (`transport::sql`, ADR-0044); the dialect is here.
 
 use codec::sql::Delimiter;
-use transport::sql::{self, Literal};
+use transport::sql::{Dialect, Literal};
 
 use crate::hex::from_hex_literal;
+
+/// `MySQL` as the capability writes and reads it: a target opens with
+/// `mysql://` or `mariadb://`, names a database, and an identifier is in
+/// backticks with a backtick doubled, or bare with `_ .` in it.
+pub const DIALECT: Dialect = Dialect {
+    schemes: &["mysql", "mariadb"],
+    catalog: "database",
+    identifier: Delimiter::BACKTICK,
+    bare: &['_', '.'],
+};
 
 /// `INSERT INTO <table> (<column>) VALUES (<literal>)` taken apart: the
 /// table, the column and the value — a quoted string's text with its
@@ -16,7 +26,7 @@ use crate::hex::from_hex_literal;
 /// in backticks; anything else is `None`.
 #[must_use]
 pub fn parse_insert(statement: &str) -> Option<(String, String, Literal)> {
-    sql::parse_insert(statement, identifier, literal)
+    DIALECT.parse_insert(statement, literal)
 }
 
 /// One literal — `'…'` with backslash escapes, or `X'…'` — and what
@@ -58,18 +68,6 @@ fn literal(rest: &str) -> Option<(Literal, &str)> {
             other => value.push(other),
         }
     }
-}
-
-/// One identifier, bare or in backticks, and what follows it.
-fn identifier(rest: &str) -> Option<(String, &str)> {
-    let rest = rest.trim_start();
-    if rest.starts_with('`') {
-        return Delimiter::BACKTICK.unquote_prefix(rest).ok();
-    }
-    let end = rest
-        .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
-        .unwrap_or(rest.len());
-    (end > 0).then(|| (rest[..end].to_string(), &rest[end..]))
 }
 
 #[cfg(test)]
