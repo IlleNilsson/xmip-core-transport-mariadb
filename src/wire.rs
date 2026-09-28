@@ -19,7 +19,7 @@ use codec::cursor::Cursor;
 use codec::unicode::Form;
 use codec::writer::ByteWriter;
 use net::MAX_BODY;
-use transport::ceiling;
+use net::ceiling;
 use transport::error::{Result, classify, protocol_error};
 
 /// The most one packet carries; a longer payload continues in the next.

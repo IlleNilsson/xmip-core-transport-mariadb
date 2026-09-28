@@ -16,15 +16,15 @@ use transport::error::{Result, protocol_error};
 use crate::wire::{Mysql, MysqlWrite};
 
 /// Opens an OK packet.
-pub const OK_HEADER: u8 = 0x00;
+const OK_HEADER: u8 = 0x00;
 /// Opens an ERR packet.
 pub const ERR_HEADER: u8 = 0xff;
 /// Opens an EOF packet, and an authentication switch.
 pub const EOF_HEADER: u8 = 0xfe;
 /// A NULL in a text row.
-pub const NULL_VALUE: u8 = 0xfb;
+const NULL_VALUE: u8 = 0xfb;
 /// The column type a definition names: `MYSQL_TYPE_VAR_STRING`.
-pub const VAR_STRING: u8 = 0xfd;
+const VAR_STRING: u8 = 0xfd;
 /// The rest of a definition after its names is twelve bytes.
 const FIXED_FIELDS: u64 = 0x0c;
 

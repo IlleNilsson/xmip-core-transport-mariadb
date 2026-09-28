@@ -37,20 +37,20 @@ pub const NATIVE_PASSWORD: &str = "mysql_native_password";
 pub const NONCE_LENGTH: usize = 20;
 
 /// Connect straight to a database.
-pub const CLIENT_CONNECT_WITH_DB: u32 = 0x0000_0008;
+const CLIENT_CONNECT_WITH_DB: u32 = 0x0000_0008;
 /// The 4.1 shapes of the response and of every result.
 pub const CLIENT_PROTOCOL_41: u32 = 0x0000_0200;
 /// The password behind a length byte rather than a NUL.
-pub const CLIENT_SECURE_CONNECTION: u32 = 0x0000_8000;
+const CLIENT_SECURE_CONNECTION: u32 = 0x0000_8000;
 /// Both sides name the plugin.
-pub const CLIENT_PLUGIN_AUTH: u32 = 0x0008_0000;
+const CLIENT_PLUGIN_AUTH: u32 = 0x0008_0000;
 /// The password behind a length-encoded length; read, never sent.
-pub const CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA: u32 = 0x0020_0000;
+const CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA: u32 = 0x0020_0000;
 /// What this crate takes up.
 pub const CAPABILITIES: u32 =
     CLIENT_PROTOCOL_41 | CLIENT_SECURE_CONNECTION | CLIENT_PLUGIN_AUTH | CLIENT_CONNECT_WITH_DB;
 /// utf8mb4, general collation.
-pub const UTF8MB4: u8 = 45;
+const UTF8MB4: u8 = 45;
 
 /// What a server opens with.
 #[derive(Clone, Debug, PartialEq, Eq)]
