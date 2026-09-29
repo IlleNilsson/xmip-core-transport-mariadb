@@ -4,7 +4,7 @@
 //! a configured query is what Xmip carries, the first column is where it
 //! came from.
 //!
-//! `MySQL` and `MariaDB` are the databases the estate's partners already
+//! `MySQL` and `MariaDB` are the databases the estate's Parties already
 //! have, and a table in one is the oldest integration surface there is: a
 //! producer inserts, an integrator polls. A Receive Location runs its
 //! query — `SELECT id, payload FROM inbox ORDER BY id` unless told
