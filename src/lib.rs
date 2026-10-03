@@ -33,6 +33,21 @@
 //! column, a `DELETE … RETURNING` on `MariaDB` — is what keeps a row from
 //! arriving twice.
 //!
+//! **A row is consumed by the `accept` statement, after its cycle.** The
+//! query only reads. Where the Location declares `accept` — `DELETE FROM
+//! inbox WHERE id = ?` — it runs once a row's cycle accepted or refused
+//! it, the row's name bound in place of `?` (`transport::sql::accept`),
+//! written as a string literal by `quote_literal`: a table has no place for a
+//! refused row, the runtime audited the refusal, and from Message creation
+//! on the Stream is kept in Xmip (ADR-0013). A row whose cycle failed is
+//! left, and the next receive reads it again; so is a row whose name is
+//! NULL, which no statement can name. Where `accept` is left out a row's
+//! verdict tells the database nothing: every row is read again unless the
+//! query keeps it from that.
+//! A query that consumes as it reads — a `DELETE … RETURNING` on `MariaDB`
+//! — consumes before the receive cycle has run, so acceptance is
+//! at-most-once under such a query.
+//!
 //! The origin URI carries what the row knew: `mysql://server/orders?row=41`.
 //! A send target is `mysql://host:3306/<database>/<table>/<column>`,
 //! `host:3306/<database>/<table>/<column>`, or `<table>/<column>` on the
@@ -47,6 +62,7 @@ pub mod session;
 pub mod wire;
 
 use std::net::TcpListener;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub use client::{Client, QueryResult, quote_literal};
@@ -56,8 +72,8 @@ use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::sql::{COLUMN, Column, ENCODING};
-use transport::{Arrived, Configured, Directions, Login, Pool, Transport};
+use transport::sql::{COLUMN, Column, ENCODING, accept};
+use transport::{Arrived, Configured, Directions, Login, Pool, Taken, Transport};
 
 use insert::DIALECT;
 use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
@@ -78,6 +94,8 @@ pub struct MysqlTransport {
     database: String,
     login: Login,
     query: String,
+    /// The statement run on a row's verdict, its name bound in.
+    accept: Option<String>,
     column: Column,
     timeout: Option<Duration>,
     /// The connections a send inserts on and a receive queries on, logged
@@ -99,6 +117,7 @@ impl MysqlTransport {
             database: database.into(),
             login: Login::new(user, ""),
             query: DEFAULT_QUERY.to_string(),
+            accept: None,
             column: Column::Binary,
             timeout: None,
             connections: Pool::new(),
@@ -117,6 +136,15 @@ impl MysqlTransport {
     #[must_use]
     pub fn with_query(mut self, query: impl Into<String>) -> Self {
         self.query = query.into();
+        self
+    }
+
+    /// The statement run once a row's cycle accepted or refused it, the
+    /// row's name in place of the dialect's first parameter
+    /// (`transport::sql::accept`).
+    #[must_use]
+    pub fn with_accept(mut self, statement: impl Into<String>) -> Self {
+        self.accept = Some(statement.into());
         self
     }
 
@@ -174,31 +202,40 @@ impl Transport for MysqlTransport {
         Directions::BOTH
     }
 
+    fn arrivals(&self) -> transport::Arrivals {
+        transport::Arrivals::Ordered("a poll reads again what is not yet told")
+    }
+
     /// Run the query on the connection kept for the server and database,
-    /// logged in on the first receive; each row is a Stream.
+    /// logged in on the first receive; each row is a Stream, whole. Its
+    /// verdict runs the `accept` statement where one is declared — on
+    /// `Accepted` and `Refused`, never on `Failed` — and tells the database
+    /// nothing where none is: whether a row is read again is then the
+    /// query's (a query that consumes as it reads makes acceptance
+    /// at-most-once).
     fn receive(&self) -> Result<Vec<Arrived>> {
         let result = self.connections.exchange(
             &format!("{}/{}", self.server, self.database),
             || self.connect(),
             |client| client.query(&self.query),
         )?;
-        let mut arrived = Vec::with_capacity(result.rows.len());
-        for (index, row) in result.rows.into_iter().enumerate() {
-            let name = row
-                .first()
-                .cloned()
-                .flatten()
-                .unwrap_or_else(|| index.to_string());
-            let bytes = match row.last().cloned().flatten() {
-                Some(value) => self.column.bytes(&value, hex::from_hex_literal)?,
-                None => Vec::new(),
-            };
-            arrived.push(Arrived::new(
-                format!("mysql://{}/{}?row={name}", self.server, self.database),
-                bytes,
-            ));
-        }
-        Ok(arrived)
+        let shared = Arc::new(self.clone());
+        accept::arrivals(
+            result.rows,
+            |name| format!("mysql://{}/{}?row={name}", self.server, self.database),
+            Clone::clone,
+            |value| self.column.bytes(&value, hex::from_hex_literal),
+            |name| {
+                let transport = Arc::clone(&shared);
+                DIALECT.accepting(self.accept.as_deref(), name, quote_literal, move |sql| {
+                    transport.connections.exchange(
+                        &format!("{}/{}", transport.server, transport.database),
+                        || transport.connect(),
+                        |client| client.execute(sql).map(|_| ()),
+                    )
+                })
+            },
+        )
     }
 
     /// Insert the bytes as one column of one row: as a hexadecimal
@@ -252,6 +289,7 @@ impl Configured for MysqlTransport {
                           is the Stream.",
                 applies: Applies::Receive,
             },
+            accept::ACCEPT,
             COLUMN,
             ENCODING,
             Setting {
@@ -272,6 +310,9 @@ impl Configured for MysqlTransport {
         if let Some(query) = settings.optional_text("query") {
             transport = transport.with_query(query);
         }
+        if let Some(statement) = settings.optional_text(accept::ACCEPT.name) {
+            transport = transport.with_accept(statement);
+        }
         if let Some(timeout) = settings.optional_duration("timeout") {
             transport = transport.timing_out_after(timeout);
         }
@@ -290,7 +331,7 @@ impl MysqlTransport {
 }
 
 impl Accepting for MysqlTransport {
-    fn take_one(self, listener: &TcpListener) -> Result<Arrived> {
+    fn take_one(self, listener: &TcpListener) -> Result<Taken> {
         // The client keeps its connection for the next insert.
         self.accept_one(listener)?
             .next_insert()?
@@ -361,6 +402,69 @@ mod tests {
         );
     }
 
+    /// The first of `arrived` read and refused, the rest taken.
+    fn verdicts(arrived: Vec<Arrived>) -> Result<Vec<Taken>> {
+        let mut taken = Vec::new();
+        for (index, one) in arrived.into_iter().enumerate() {
+            assert!(one.defers());
+            if index > 0 {
+                taken.push(one.taken()?);
+                continue;
+            }
+            let (origin, mut body, acknowledgement) = one.into_parts();
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut body, &mut bytes).expect("reading");
+            acknowledgement.acknowledge(transport::Verdict::Failed)?;
+            taken.push(Taken::new(origin, bytes));
+        }
+        Ok(taken)
+    }
+
+    #[test]
+    fn the_accept_statement_consumes_an_accepted_and_a_refused_row_after_the_cycle() {
+        let far_end =
+            MysqlTransport::new("127.0.0.1:0", "orders", "xmip").timing_out_after(secs(2));
+        let (listener, address) = far_end.bind().expect("binding");
+        let receiver = std::thread::spawn(move || {
+            let near = MysqlTransport::new(address, "orders", "xmip")
+                .with_accept("DELETE FROM inbox WHERE id = ?")
+                .timing_out_after(secs(2));
+            let mut arrived = near.receive()?;
+            assert_eq!(arrived.len(), 4);
+            arrived.remove(0).taken()?;
+            arrived
+                .remove(0)
+                .refused(transport::Refusal::Unacceptable)?;
+            arrived.remove(0).failed()?;
+            arrived.remove(0).taken()?;
+            Ok::<_, TransportError>(())
+        });
+        let rows: [&[Option<&str>]; 4] = [
+            &[Some("41"), Some("X'61'")],
+            &[Some("it's"), Some("X'62'")],
+            &[Some("43"), Some("X'63'")],
+            &[None, Some("X'64'")],
+        ];
+        let mut session = far_end
+            .accept_one(&listener)
+            .expect("accepting")
+            .with_table(&["id", "payload"], &rows);
+        let mut events = Vec::new();
+        while let Some(event) = session.next_event().expect("serving") {
+            events.push(event);
+        }
+        receiver.join().expect("thread").expect("receiving");
+        assert_eq!(
+            events,
+            [
+                Event::Selected(DEFAULT_QUERY.into()),
+                Event::Executed("DELETE FROM inbox WHERE id = '41'".into()),
+                Event::Executed("DELETE FROM inbox WHERE id = 'it\\'s'".into()),
+            ],
+            "the failed row and the unnamed one are left"
+        );
+    }
+
     #[test]
     fn a_receive_runs_the_query_and_each_row_is_a_stream() {
         let far_end = MysqlTransport::new("127.0.0.1:0", "orders", "xmip")
@@ -375,8 +479,14 @@ mod tests {
                     .with_query("SELECT id, kind, payload FROM inbox ORDER BY id")
                     .timing_out_after(secs(2))
             };
-            let bytes = near().receive();
-            (bytes, near().holding(Column::Text(Form::Utf8)).receive())
+            let bytes = near().receive().and_then(verdicts);
+            (
+                bytes,
+                near()
+                    .holding(Column::Text(Form::Utf8))
+                    .receive()
+                    .and_then(verdicts),
+            )
         });
         let rows: [&[Option<&str>]; 3] = [
             &[Some("41"), Some("order"), Some("X'4953412a30302a'")],
@@ -394,7 +504,10 @@ mod tests {
             event,
             Event::Selected("SELECT id, kind, payload FROM inbox ORDER BY id".into())
         );
-        assert!(session.next_event().expect("quit").is_none());
+        assert!(
+            session.next_event().expect("ended").is_none(),
+            "a verdict, refused or accepted, says nothing to the database"
+        );
         let mut session = far_end
             .accept_one(&listener)
             .expect("the text column")

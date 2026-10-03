@@ -18,6 +18,7 @@ pub const DIALECT: Dialect = Dialect {
     catalog: "database",
     identifier: Delimiter::BACKTICK,
     bare: &['_', '.'],
+    marker: "?",
 };
 
 /// `INSERT INTO <table> (<column>) VALUES (<literal>)` taken apart: the
