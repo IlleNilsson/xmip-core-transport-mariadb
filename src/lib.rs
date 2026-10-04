@@ -33,20 +33,18 @@
 //! column, a `DELETE … RETURNING` on `MariaDB` — is what keeps a row from
 //! arriving twice.
 //!
-//! **A row is consumed by the `accept` statement, after its cycle.** The
-//! query only reads. Where the Location declares `accept` — `DELETE FROM
-//! inbox WHERE id = ?` — it runs once a row's cycle accepted or refused
-//! it, the row's name bound in place of `?` (`transport::sql::accept`),
-//! written as a string literal by `quote_literal`: a table has no place for a
-//! refused row, the runtime audited the refusal, and from Message creation
-//! on the Stream is kept in Xmip (ADR-0013). A row whose cycle failed is
-//! left, and the next receive reads it again; so is a row whose name is
-//! NULL, which no statement can name. Where `accept` is left out a row's
-//! verdict tells the database nothing: every row is read again unless the
-//! query keeps it from that.
-//! A query that consumes as it reads — a `DELETE … RETURNING` on `MariaDB`
-//! — consumes before the receive cycle has run, so acceptance is
-//! at-most-once under such a query.
+//! **A row is consumed by the `accept` statement, after its cycle.** The query
+//! only reads. Where the Location declares `accept` — `DELETE FROM inbox WHERE
+//! id = ?` — it runs once a row's cycle accepted it, the row's name bound in
+//! place of `?` (`transport::sql::accept`), written as a string literal by
+//! `quote_literal`. A refused row is left where it lies, and not received again
+//! while its body is unchanged. A row whose cycle failed is left, and the next
+//! receive reads it again; so is a row whose name is NULL, which no statement
+//! can name. Where `accept` is left out a row's verdict tells the database
+//! nothing: every row is read again unless the query keeps it from that. A
+//! query that consumes as it reads — a `DELETE … RETURNING` on `MariaDB` —
+//! consumes before the receive cycle has run, so acceptance is at-most-once
+//! under such a query.
 //!
 //! The origin URI carries what the row knew: `mysql://server/orders?row=41`.
 //! A send target is `mysql://host:3306/<database>/<table>/<column>`,
@@ -96,6 +94,9 @@ pub struct MysqlTransport {
     query: String,
     /// The statement run on a row's verdict, its name bound in.
     accept: Option<String>,
+    /// The rows refused and left, not received again while unchanged.
+    /// Cloned, the same memory.
+    refused: accept::RefusedRows,
     column: Column,
     timeout: Option<Duration>,
     /// The connections a send inserts on and a receive queries on, logged
@@ -118,6 +119,7 @@ impl MysqlTransport {
             login: Login::new(user, ""),
             query: DEFAULT_QUERY.to_string(),
             accept: None,
+            refused: accept::RefusedRows::default(),
             column: Column::Binary,
             timeout: None,
             connections: Pool::new(),
@@ -139,7 +141,7 @@ impl MysqlTransport {
         self
     }
 
-    /// The statement run once a row's cycle accepted or refused it, the
+    /// The statement run once a row's cycle accepted it, the
     /// row's name in place of the dialect's first parameter
     /// (`transport::sql::accept`).
     #[must_use]
@@ -206,13 +208,12 @@ impl Transport for MysqlTransport {
         transport::Arrivals::Ordered("a poll reads again what is not yet told")
     }
 
-    /// Run the query on the connection kept for the server and database,
-    /// logged in on the first receive; each row is a Stream, whole. Its
-    /// verdict runs the `accept` statement where one is declared — on
-    /// `Accepted` and `Refused`, never on `Failed` — and tells the database
-    /// nothing where none is: whether a row is read again is then the
-    /// query's (a query that consumes as it reads makes acceptance
-    /// at-most-once).
+    /// Run the query on the connection kept for the server and database, logged in
+    /// on the first receive; each row is a Stream, whole. Its verdict runs the
+    /// `accept` statement where one is declared — on `Accepted`, never on `Refused`
+    /// or `Failed` — and tells the database nothing where none is: whether a row is
+    /// read again is then the query's (a query that consumes as it reads makes
+    /// acceptance at-most-once).
     fn receive(&self) -> Result<Vec<Arrived>> {
         let result = self.connections.exchange(
             &format!("{}/{}", self.server, self.database),
@@ -222,6 +223,7 @@ impl Transport for MysqlTransport {
         let shared = Arc::new(self.clone());
         accept::arrivals(
             result.rows,
+            &self.refused,
             |name| format!("mysql://{}/{}?row={name}", self.server, self.database),
             Clone::clone,
             |value| self.column.bytes(&value, hex::from_hex_literal),
@@ -421,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn the_accept_statement_consumes_an_accepted_and_a_refused_row_after_the_cycle() {
+    fn accept_consumes_an_accepted_row_and_a_refused_one_is_left_unreceived() {
         let far_end =
             MysqlTransport::new("127.0.0.1:0", "orders", "xmip").timing_out_after(secs(2));
         let (listener, address) = far_end.bind().expect("binding");
@@ -437,6 +439,16 @@ mod tests {
                 .refused(transport::Refusal::Unacceptable)?;
             arrived.remove(0).failed()?;
             arrived.remove(0).taken()?;
+            let again: Vec<_> = near.receive()?.into_iter().map(|a| a.origin_uri).collect();
+            assert_eq!(
+                again.len(),
+                3,
+                "the refused row is not received again: {again:?}"
+            );
+            assert!(
+                again.iter().all(|row| !row.ends_with("?row=it's")),
+                "{again:?}"
+            );
             Ok::<_, TransportError>(())
         });
         let rows: [&[Option<&str>]; 4] = [
@@ -459,9 +471,9 @@ mod tests {
             [
                 Event::Selected(DEFAULT_QUERY.into()),
                 Event::Executed("DELETE FROM inbox WHERE id = '41'".into()),
-                Event::Executed("DELETE FROM inbox WHERE id = 'it\\'s'".into()),
+                Event::Selected(DEFAULT_QUERY.into()),
             ],
-            "the failed row and the unnamed one are left"
+            "the refused, the failed and the unnamed row are left"
         );
     }
 
