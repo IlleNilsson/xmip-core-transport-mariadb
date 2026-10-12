@@ -6,9 +6,9 @@
 //! starts over at every command.
 //!
 //! Fields are read and written through codec's byte cursor and writer;
-//! what is `MySQL`'s own — the three-byte length, the length-encoded
-//! integer and string, the NUL-terminated string — is [`Mysql`] on the
-//! cursor and [`MysqlWrite`] beside the writer. The handshake is in
+//! what is `MariaDB`'s own — the three-byte length, the length-encoded
+//! integer and string, the NUL-terminated string — is [`MariaDb`] on the
+//! cursor and [`MariaDbWrite`] beside the writer. The handshake is in
 //! `handshake.rs` and what a query comes back with is in `result.rs`; this
 //! file is what both are made of, and the two commands
 //! this crate sends, because a command packet is one byte and the text.
@@ -128,9 +128,9 @@ pub fn read_packet(reader: &mut impl Read) -> Result<Option<(u8, Vec<u8>)>> {
     }
 }
 
-/// `MySQL`'s own fields, read off codec's cursor. Fixed integers are codec's,
+/// `MariaDB`'s own fields, read off codec's cursor. Fixed integers are codec's,
 /// little-endian (`u16_le`, `u32_le`).
-pub trait Mysql {
+pub trait MariaDb {
     /// The next length-encoded integer.
     ///
     /// # Errors
@@ -151,7 +151,7 @@ pub trait Mysql {
     fn cstring(&mut self) -> Result<String>;
 }
 
-impl Mysql for Cursor<'_> {
+impl MariaDb for Cursor<'_> {
     fn lenenc_int(&mut self) -> Result<u64> {
         let width = match self.byte()? {
             small @ 0..=0xfa => return Ok(u64::from(small)),
@@ -180,8 +180,8 @@ impl Mysql for Cursor<'_> {
     }
 }
 
-/// `MySQL`'s own fields, written beside codec's writer.
-pub trait MysqlWrite {
+/// `MariaDB`'s own fields, written beside codec's writer.
+pub trait MariaDbWrite {
     /// `count` as the packet header's three bytes, little-endian, at most
     /// [`MAX_PACKET`].
     fn int24(&mut self, count: usize) -> &mut Self;
@@ -196,7 +196,7 @@ pub trait MysqlWrite {
     fn cstring(&mut self, text: &str) -> &mut Self;
 }
 
-impl MysqlWrite for Vec<u8> {
+impl MariaDbWrite for Vec<u8> {
     fn int24(&mut self, count: usize) -> &mut Self {
         let bytes = u32::try_from(count.min(MAX_PACKET))
             .unwrap_or(0)
