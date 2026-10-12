@@ -13,7 +13,7 @@ use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
 use transport::error::{Result, protocol_error};
 
-use crate::wire::{Mysql, MysqlWrite};
+use crate::wire::{MariaDb, MariaDbWrite};
 
 /// Opens an OK packet.
 const OK_HEADER: u8 = 0x00;
@@ -23,7 +23,7 @@ pub const ERR_HEADER: u8 = 0xff;
 pub const EOF_HEADER: u8 = 0xfe;
 /// A NULL in a text row.
 const NULL_VALUE: u8 = 0xfb;
-/// The column type a definition names: `MYSQL_TYPE_VAR_STRING`.
+/// The column type a definition names: `VAR_STRING`, 253.
 const VAR_STRING: u8 = 0xfd;
 /// The rest of a definition after its names is twelve bytes.
 const FIXED_FIELDS: u64 = 0x0c;

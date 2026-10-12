@@ -14,15 +14,15 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use sql::{MARIADB, Verb};
 use transport::error::{Result, TransportError, classify, protocol_error};
-use transport::sql::{self, Answering, Column, Inserted, Rows};
+use transport::sql::{Answering, Column, Inserted, Rows, next_insert, table};
 use transport::{Login, Taken, socket};
 
 use crate::handshake::{
     CAPABILITIES, HandshakeV10, NATIVE_PASSWORD, NONCE_LENGTH, decode_response, encode_handshake,
     verify,
 };
-use crate::insert::parse_insert;
 use crate::result::{Reply, encode_column, encode_column_count, encode_reply, encode_row};
 use crate::wire::{Command, decode_command, frame, read_packet};
 
@@ -173,7 +173,7 @@ impl Session {
     /// Answer any SELECT with these `columns` and `rows`.
     #[must_use]
     pub fn with_table(mut self, columns: &[&str], rows: &[&[Option<&str>]]) -> Self {
-        (self.columns, self.rows) = sql::table(columns, rows);
+        (self.columns, self.rows) = table(columns, rows);
         self
     }
 
@@ -194,7 +194,7 @@ impl Session {
     /// # Errors
     /// Where the connection broke, or nothing arrived before the timeout.
     pub fn next_insert(&mut self) -> Result<Option<Taken>> {
-        sql::next_insert(|| self.next_event())
+        next_insert(|| self.next_event())
     }
 
     /// The next query the client ran, answered, or `None` when it quit.
@@ -233,19 +233,18 @@ impl Session {
         if let Some(answer) = self.answering.as_mut().and_then(|f| f(sql)) {
             return (answer, Event::Executed(sql.to_string()));
         }
-        let verb = sql::verb(sql);
-        match verb.as_str() {
-            "SELECT" => (
+        match Verb::of_statement(sql) {
+            Some(Verb::Select) => (
                 Answer::Rows {
                     columns: self.columns.clone(),
                     rows: self.rows.clone(),
                 },
                 Event::Selected(sql.to_string()),
             ),
-            "INSERT" => match parse_insert(sql) {
+            Some(Verb::Insert) => match MARIADB.parse_insert_literal(sql) {
                 Some((table, column, value)) => {
                     let origin =
-                        format!("mysql://{}/{}/{table}/{column}", self.peer, self.database);
+                        format!("mariadb://{}/{}/{table}/{column}", self.peer, self.database);
                     (
                         Answer::Complete(1),
                         Event::Inserted(Taken::new(origin, self.column.stored(value))),

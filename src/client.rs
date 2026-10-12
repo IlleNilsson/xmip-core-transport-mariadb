@@ -47,7 +47,7 @@ impl Client {
     ///
     /// # Errors
     /// Where the server could not be reached, refused the login, or asks
-    /// for a plugin other than `mysql_native_password`, which this crate
+    /// for a plugin other than [`NATIVE_PASSWORD`], which this crate
     /// does not speak.
     pub fn connect(
         server: &str,
@@ -93,7 +93,7 @@ impl Client {
                     if plugin != NATIVE_PASSWORD {
                         return Err(TransportError::permanent(format!(
                             "the server asks for {plugin}, and this crate speaks \
-                             mysql_native_password only"
+                             {NATIVE_PASSWORD} only"
                         )));
                     }
                     client.write(&mut sequence, &scramble(&login.password, &nonce))?;
@@ -238,42 +238,9 @@ pub fn sql_error(code: u16, state: &str, message: &str) -> TransportError {
     }
 }
 
-/// `text` as a string literal: quoted, with the backslash escapes the
-/// server reads unless `NO_BACKSLASH_ESCAPES` is on — a quote, a
-/// backslash, a NUL and the line ends each written out.
-#[must_use]
-pub fn quote_literal(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('\'');
-    for c in text.chars() {
-        match c {
-            '\'' => out.push_str("\\'"),
-            '\\' => out.push_str("\\\\"),
-            '\0' => out.push_str("\\0"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\u{1a}' => out.push_str("\\Z"),
-            other => out.push(other),
-        }
-    }
-    out.push('\'');
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn quoting_escapes_with_a_backslash_and_backticks_double() {
-        assert_eq!(quote_literal("it's"), "'it\\'s'");
-        assert_eq!(quote_literal("back\\slash"), "'back\\\\slash'");
-        assert_eq!(quote_literal("a\nb\r\0\u{1a}"), "'a\\nb\\r\\0\\Z'");
-        assert_eq!(quote_literal(""), "''");
-        let quote_identifier = |name| crate::insert::DIALECT.quote_identifier(name);
-        assert_eq!(quote_identifier("in`box"), "`in``box`");
-        assert_eq!(quote_identifier("Inbox"), "`Inbox`");
-    }
 
     #[test]
     fn an_error_is_judged_by_its_code_and_class() {

@@ -4,22 +4,23 @@
 //! a configured query is what Xmip carries, the first column is where it
 //! came from.
 //!
-//! `MySQL` and `MariaDB` are the databases the estate's Parties already
-//! have, and a table in one is the oldest integration surface there is: a
-//! producer inserts, an integrator polls. A Receive Location runs its
+//! `MariaDB` is a database the estate's Parties already have, and its
+//! protocol also reaches the MySQL servers they have. A table in one is
+//! the oldest integration surface there is: a producer inserts, an
+//! integrator polls. A Receive Location runs its
 //! query — `SELECT id, payload FROM inbox ORDER BY id` unless told
 //! otherwise — and hands each row up; a Send Location inserts the Stream
 //! as one column of one row. What the column holds is the Location's to
 //! declare, never the bytes' (ADR-0038): `column = "binary"`, the default,
 //! inserts every Stream as an `X'…'` hexadecimal literal and reads a value
-//! back from a hex form (`hex.rs`); `column = "text"` decodes the Stream
+//! back from a hex form (`MariaDB`'s, `xmip-core-library-sql`); `column = "text"` decodes the Stream
 //! strictly in its `encoding` — `utf-8` unless another Unicode form is
 //! named — inserts it as a string literal, and encodes a value read back
 //! to that form. A Stream that is not its declared form is refused, never
 //! repaired; so is a row value that is not UTF-8. What is spoken is
 //! the client/server protocol as every client since 4.1 speaks it, on
 //! port 3306: the greeting, a response with the password scrambled the
-//! `mysql_native_password` way (`handshake.rs`, SHA-1 from codec),
+//! native password way (`handshake.rs`, SHA-1 from codec),
 //! `COM_QUERY` with rows as text (`result.rs`), `COM_QUIT`.
 //! `caching_sha2_password` is not implemented and a server that asks for
 //! it is told so; TLS is `xmip-core-library-tls`'s, per ADR-0033.
@@ -36,8 +37,8 @@
 //! **A row is consumed by the `accept` statement, after its cycle.** The query
 //! only reads. Where the Location declares `accept` — `DELETE FROM inbox WHERE
 //! id = ?` — it runs once a row's cycle accepted it, the row's name bound in
-//! place of `?` (`transport::sql::accept`), written as a string literal by
-//! `quote_literal`. A refused row is left where it lies, and not received again
+//! place of `?` (`transport::sql::accept`), written as `MariaDB`'s string
+//! literal. A refused row is left where it lies, and not received again
 //! while its body is unchanged. A row whose cycle failed is left, and the next
 //! receive reads it again; so is a row whose name is NULL, which no statement
 //! can name. Where `accept` is left out a row's verdict tells the database
@@ -46,15 +47,13 @@
 //! consumes before the receive cycle has run, so acceptance is at-most-once
 //! under such a query.
 //!
-//! The origin URI carries what the row knew: `mysql://server/orders?row=41`.
-//! A send target is `mysql://host:3306/<database>/<table>/<column>`,
+//! The origin URI carries what the row knew: `mariadb://server/orders?row=41`.
+//! A send target is `mariadb://host:3306/<database>/<table>/<column>`,
 //! `host:3306/<database>/<table>/<column>`, or `<table>/<column>` on the
 //! configured server and database.
 
 pub mod client;
 pub mod handshake;
-pub mod hex;
-pub mod insert;
 pub mod result;
 pub mod session;
 pub mod wire;
@@ -63,19 +62,22 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use client::{Client, QueryResult, quote_literal};
+pub use client::{Client, QueryResult};
 pub use session::{Answer, Event, Session};
+use sql::MARIADB;
 use transport::ArrivalIdentity;
 use transport::claim::{NoNativeClaim, ResourceClaim};
 use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::sql::{COLUMN, Column, ENCODING, accept};
+use transport::sql::{COLUMN, Column, ENCODING, accept, destination};
 use transport::{Arrived, Configured, Directions, Login, Pool, Taken, Transport};
 
-use insert::DIALECT;
 use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
+
+/// The schemes a send target may open with.
+const SCHEMES: &[&str] = &["mariadb"];
 
 /// What a Receive Location runs unless told otherwise.
 pub const DEFAULT_QUERY: &str = "SELECT id, payload FROM inbox ORDER BY id";
@@ -88,7 +90,7 @@ const LOOPBACK_USER: &str = "xmip";
 const LOOPBACK_TARGET: &str = "probe/payload";
 
 #[derive(Clone)]
-pub struct MysqlTransport {
+pub struct MariaDbTransport {
     server: String,
     database: String,
     login: Login,
@@ -105,7 +107,7 @@ pub struct MysqlTransport {
     connections: Pool<Client>,
 }
 
-impl MysqlTransport {
+impl MariaDbTransport {
     /// Speak to the server at `server`, on `database`, as `user` with no
     /// password until one is given.
     #[must_use]
@@ -196,9 +198,9 @@ impl MysqlTransport {
     }
 }
 
-impl Transport for MysqlTransport {
+impl Transport for MariaDbTransport {
     fn name(&self) -> &'static str {
-        "mysql"
+        "mariadb"
     }
 
     fn directions(&self) -> Directions {
@@ -207,6 +209,10 @@ impl Transport for MysqlTransport {
 
     fn arrivals(&self) -> transport::Arrivals {
         transport::Arrivals::Ordered("a poll reads again what is not yet told")
+    }
+
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Polled("a receive runs the query and returns")
     }
 
     /// Run the query on the connection kept for the server and database, logged in
@@ -225,12 +231,12 @@ impl Transport for MysqlTransport {
         accept::arrivals(
             result.rows,
             &self.refused,
-            |name| format!("mysql://{}/{}?row={name}", self.server, self.database),
+            |name| format!("mariadb://{}/{}?row={name}", self.server, self.database),
             Clone::clone,
-            |value| self.column.bytes(&value, hex::from_hex_literal),
+            |value| self.column.bytes(&value, &MARIADB),
             |name| {
                 let transport = Arc::clone(&shared);
-                DIALECT.accepting(self.accept.as_deref(), name, quote_literal, move |sql| {
+                accept::accepting(&MARIADB, self.accept.as_deref(), name, move |sql| {
                     transport.connections.exchange(
                         &format!("{}/{}", transport.server, transport.database),
                         || transport.connect(),
@@ -246,14 +252,12 @@ impl Transport for MysqlTransport {
     /// connection kept for the server and database, logged in on the first
     /// send to them.
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
-        let to = DIALECT.destination(target, &self.server, &self.database)?;
-        let literal = self
-            .column
-            .literal(bytes, quote_literal, hex::hex_literal)?;
-        let insert = DIALECT.insert(to.table, to.column, &literal);
+        let to = destination(SCHEMES, target, &self.server, &self.database)?;
+        let literal = self.column.literal(bytes, &MARIADB)?;
+        let insert = MARIADB.insert(to.table, to.column, &literal);
         self.connections.exchange(
-            &format!("{}/{}", to.server, to.catalog),
-            || self.connect_to(to.server, to.catalog),
+            &format!("{}/{}", to.server, to.database),
+            || self.connect_to(to.server, to.database),
             |client| client.execute(&insert).map(|_| ()),
         )
     }
@@ -265,7 +269,7 @@ impl Transport for MysqlTransport {
     }
 }
 
-impl Configured for MysqlTransport {
+impl Configured for MariaDbTransport {
     /// The address is the server's host and port: where a Location connects.
     const SETTINGS: &'static Settings = &Settings {
         technology: env!("CARGO_PKG_NAME"),
@@ -323,7 +327,7 @@ impl Configured for MysqlTransport {
     }
 }
 
-impl MysqlTransport {
+impl MariaDbTransport {
     /// Both ends on this machine: an ephemeral local port, a login with no
     /// password, the loopback timeout.
     #[must_use]
@@ -333,7 +337,7 @@ impl MysqlTransport {
     }
 }
 
-impl Accepting for MysqlTransport {
+impl Accepting for MariaDbTransport {
     fn take_one(self, listener: &TcpListener) -> Result<Taken> {
         // The client keeps its connection for the next insert.
         self.accept_one(listener)?
@@ -342,7 +346,7 @@ impl Accepting for MysqlTransport {
     }
 }
 
-impl Loopback for MysqlTransport {
+impl Loopback for MariaDbTransport {
     fn arrival_identity(&self) -> ArrivalIdentity {
         ArrivalIdentity::Unnamed(
             "a row names no sender: the database it was read from is in its origin",
@@ -369,7 +373,7 @@ impl Loopback for MysqlTransport {
 mod tests {
     use super::*;
     use crate::handshake::{CAPABILITIES, HandshakeV10, NATIVE_PASSWORD, encode_handshake};
-    use crate::wire::{MysqlWrite, frame};
+    use crate::wire::{MariaDbWrite, frame};
     use codec::unicode::Form;
     use transport::error::TransportError;
     use transport::payload::edge_payloads;
@@ -379,16 +383,16 @@ mod tests {
     }
 
     #[test]
-    fn mysql_declares_its_settings_and_reads_through_them() {
+    fn mariadb_declares_its_settings_and_reads_through_them() {
         use xcore::settings::Given;
-        assert_eq!(MysqlTransport::SETTINGS.problems(), Vec::<String>::new());
+        assert_eq!(MariaDbTransport::SETTINGS.problems(), Vec::<String>::new());
         let text = |name: &str, value: &str| (name.to_string(), Given::Text(value.to_string()));
         let given = [
             text("database", "orders"),
             text("user", "xmip"),
             text("timeout", "2s"),
         ];
-        let built = MysqlTransport::open("db:3306", Applies::Receive, &given).expect("built");
+        let built = MariaDbTransport::open("db:3306", Applies::Receive, &given).expect("built");
         assert_eq!(built.server, "db:3306");
         assert_eq!(built.database, "orders");
         assert_eq!(built.query, DEFAULT_QUERY);
@@ -399,9 +403,9 @@ mod tests {
             text("user", "xmip"),
             text("column", "text"),
         ];
-        let built = MysqlTransport::open("db:3306", Applies::Send, &texts).expect("text");
+        let built = MariaDbTransport::open("db:3306", Applies::Send, &texts).expect("text");
         assert_eq!(built.column, Column::Text(Form::Utf8), "utf-8 unless named");
-        let Err(refused) = MysqlTransport::open("db:3306", Applies::Send, &given[1..]) else {
+        let Err(refused) = MariaDbTransport::open("db:3306", Applies::Send, &given[1..]) else {
             panic!("database is required");
         };
         assert!(
@@ -432,10 +436,10 @@ mod tests {
     #[test]
     fn accept_consumes_an_accepted_row_and_a_refused_one_is_left_unreceived() {
         let far_end =
-            MysqlTransport::new("127.0.0.1:0", "orders", "xmip").timing_out_after(secs(2));
+            MariaDbTransport::new("127.0.0.1:0", "orders", "xmip").timing_out_after(secs(2));
         let (listener, address) = far_end.bind().expect("binding");
         let receiver = std::thread::spawn(move || {
-            let near = MysqlTransport::new(address, "orders", "xmip")
+            let near = MariaDbTransport::new(address, "orders", "xmip")
                 .with_accept("DELETE FROM inbox WHERE id = ?")
                 .timing_out_after(secs(2));
             let mut arrived = near.receive()?;
@@ -486,14 +490,14 @@ mod tests {
 
     #[test]
     fn a_receive_runs_the_query_and_each_row_is_a_stream() {
-        let far_end = MysqlTransport::new("127.0.0.1:0", "orders", "xmip")
+        let far_end = MariaDbTransport::new("127.0.0.1:0", "orders", "xmip")
             .with_password("secret")
             .timing_out_after(secs(2));
         let (listener, address) = far_end.bind().expect("binding");
         let receiver = std::thread::spawn(move || {
             // Two transports, so two sessions: each keeps its own.
             let near = || {
-                MysqlTransport::new(address.clone(), "orders", "xmip")
+                MariaDbTransport::new(address.clone(), "orders", "xmip")
                     .with_password("secret")
                     .with_query("SELECT id, kind, payload FROM inbox ORDER BY id")
                     .timing_out_after(secs(2))
@@ -547,26 +551,26 @@ mod tests {
 
     #[test]
     fn a_send_inserts_the_stream_as_one_column_and_the_login_is_checked() {
-        let far_end = MysqlTransport::new("127.0.0.1:0", "orders", "xmip")
+        let far_end = MariaDbTransport::new("127.0.0.1:0", "orders", "xmip")
             .with_password("secret")
             .timing_out_after(secs(2));
         let (listener, address) = far_end.bind().expect("binding");
         let sender = std::thread::spawn(move || {
-            let near = MysqlTransport::new(address.clone(), "orders", "xmip")
+            let near = MariaDbTransport::new(address.clone(), "orders", "xmip")
                 .with_password("secret")
                 .timing_out_after(secs(2));
             near.send(
-                &format!("mysql://{address}/orders/inbox/payload"),
+                &format!("mariadb://{address}/orders/inbox/payload"),
                 b"it's \\here",
             )?;
             near.send("outbox/body", b"")?;
             near.send(&format!("{address}/orders/inbox/payload"), &[0xff, 0xfe])?;
             let bad_target = near.send("mariadb://host/only-one", b"x");
-            let refused = MysqlTransport::new(address.clone(), "orders", "xmip")
+            let refused = MariaDbTransport::new(address.clone(), "orders", "xmip")
                 .with_password("wrong")
                 .timing_out_after(secs(2))
                 .send("inbox/payload", b"x");
-            let nobody = MysqlTransport::new(address, "orders", "nobody")
+            let nobody = MariaDbTransport::new(address, "orders", "nobody")
                 .timing_out_after(secs(2))
                 .send("inbox/payload", b"x");
             Ok::<_, TransportError>((bad_target, refused, nobody))
@@ -597,18 +601,18 @@ mod tests {
         assert!(refused.message.contains("1045"));
         assert!(nobody.expect_err("wrong user").message.contains("28000"));
         assert!(far_end.claims().is_some(), "rows are artefacts");
-        assert_eq!(far_end.name(), "mysql");
+        assert_eq!(far_end.name(), "mariadb");
         assert_eq!(far_end.directions(), Directions::BOTH);
     }
 
     #[test]
     fn a_thousand_inserts_log_in_once_and_a_connection_the_server_closed_is_replaced() {
         const SENDS: usize = 1000;
-        let far_end = MysqlTransport::new("127.0.0.1:0", "orders", "xmip")
+        let far_end = MariaDbTransport::new("127.0.0.1:0", "orders", "xmip")
             .with_password("secret")
             .timing_out_after(secs(5));
         let (listener, address) = far_end.bind().expect("binding");
-        let near = MysqlTransport::new(address, "orders", "xmip")
+        let near = MariaDbTransport::new(address, "orders", "xmip")
             .with_password("secret")
             .timing_out_after(secs(5));
         let sending = near.clone();
@@ -639,11 +643,11 @@ mod tests {
     #[test]
     fn a_thousand_receives_log_in_once_and_a_connection_the_server_closed_is_replaced() {
         const RECEIVES: usize = 1000;
-        let far_end = MysqlTransport::new("127.0.0.1:0", "orders", "xmip")
+        let far_end = MariaDbTransport::new("127.0.0.1:0", "orders", "xmip")
             .with_password("secret")
             .timing_out_after(secs(5));
         let (listener, address) = far_end.bind().expect("binding");
-        let near = MysqlTransport::new(address, "orders", "xmip")
+        let near = MariaDbTransport::new(address, "orders", "xmip")
             .with_password("secret")
             .timing_out_after(secs(5));
         let receiving = near.clone();
@@ -678,8 +682,8 @@ mod tests {
 
     #[test]
     fn a_text_column_refuses_a_stream_that_is_not_its_encoding() {
-        let near =
-            MysqlTransport::new("127.0.0.1:1", "orders", "xmip").holding(Column::Text(Form::Utf8));
+        let near = MariaDbTransport::new("127.0.0.1:1", "orders", "xmip")
+            .holding(Column::Text(Form::Utf8));
         let refused = near
             .send("inbox/payload", &[0xff, 0xfe])
             .expect_err("not UTF-8");
@@ -694,10 +698,10 @@ mod tests {
     #[test]
     fn a_query_the_far_end_errors_is_the_error_and_a_statement_is_its_count() {
         let far_end =
-            MysqlTransport::new("127.0.0.1:0", "orders", "xmip").timing_out_after(secs(2));
+            MariaDbTransport::new("127.0.0.1:0", "orders", "xmip").timing_out_after(secs(2));
         let (listener, address) = far_end.bind().expect("binding");
         let near = std::thread::spawn(move || {
-            let near = MysqlTransport::new(address, "orders", "xmip").timing_out_after(secs(2));
+            let near = MariaDbTransport::new(address, "orders", "xmip").timing_out_after(secs(2));
             let failed = near.receive();
             let mut client = near.connect()?;
             let deleted = client.execute("DELETE FROM inbox WHERE id = 41")?;
@@ -762,7 +766,7 @@ mod tests {
                 let _ = std::io::Read::read(&mut stream, &mut sink);
             }
         });
-        let near = MysqlTransport::new(address, "orders", "xmip")
+        let near = MariaDbTransport::new(address, "orders", "xmip")
             .with_password("secret")
             .timing_out_after(secs(2));
         let error = near.connect().err().expect("caching_sha2_password");
@@ -774,20 +778,20 @@ mod tests {
 
     #[test]
     fn the_loopback_inserts_text_and_bytes_through_its_own_session() {
-        let pair = MysqlTransport::loopback();
+        let pair = MariaDbTransport::loopback();
         let arrived = pair.round(b"it's \\here").expect("round");
         assert_eq!(arrived.bytes, b"it's \\here");
-        assert!(arrived.origin_uri.starts_with("mysql://127.0.0.1:"));
+        assert!(arrived.origin_uri.starts_with("mariadb://127.0.0.1:"));
         assert!(arrived.origin_uri.ends_with("/probe/probe/payload"));
         let binary = pair.round(&[0xff, 0xfe]).expect("the hex literal");
         assert_eq!(binary.bytes, [0xff, 0xfe]);
-        assert_eq!(pair.name(), "mysql");
+        assert_eq!(pair.name(), "mariadb");
         assert_eq!(pair.ceiling(), None);
     }
 
     #[test]
     fn the_loopback_returns_the_edge_payloads_whole() {
-        let pair = MysqlTransport::loopback();
+        let pair = MariaDbTransport::loopback();
         for (name, payload) in edge_payloads() {
             assert!(pair.refuses(&payload).is_none(), "{name}");
             let arrived = pair.round(&payload).expect(name);

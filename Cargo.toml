@@ -2,12 +2,12 @@
 [workspace]
 
 [package]
-name = "xmip-core-transport-mysql"
+name = "xmip-core-transport-mariadb"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/IlleNilsson/xmip-core-transport-mysql"
-description = "MySQL and MariaDB transport: one row of a query is one Stream, a send is one INSERT; the client/server protocol with native password authentication. A xmip-core-transport technology."
+repository = "https://github.com/IlleNilsson/xmip-core-transport-mariadb"
+description = "MariaDB transport: one row of a query is one Stream, a send is one INSERT; the client/server protocol with native password authentication. A xmip-core-transport technology."
 publish = false
 
 [lib]
@@ -22,10 +22,12 @@ transport = { package = "xmip-core-transport", git = "https://github.com/IlleNil
 # transport::Configured (ADR-0064, amendment 2026-09-26).
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 # The estate's encoding primitives: the byte cursor and writer the fields
-# are read and written over, hex for the binary literal, SHA-1 for the
-# native password, and SQL's delimited literals and identifiers, written
-# and read once for every dialect; which delimiter is this one's own.
+# are read and written over, and SHA-1 for the native password.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
+# SQL: the MariaDB dialect this server speaks — its literals, its binary
+# form, the INSERT a send writes and a far end takes apart, and a
+# statement's verb.
+sql = { package = "xmip-core-library-sql", git = "https://github.com/IlleNilsson/xmip-core-library-sql", branch = "main" }
 # The most a connection is read for: the ceiling a payload's packets are
 # joined under (`net::MAX_BODY`).
 net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }

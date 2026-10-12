@@ -10,23 +10,23 @@
 //! password scrambled, the database and the plugin name. This crate takes
 //! up four capabilities — protocol 4.1, the secure connection that gives
 //! the password a length byte, plugin authentication so both sides can
-//! name `mysql_native_password`, and connecting straight to the database —
+//! name the native password ([`NATIVE_PASSWORD`]), and connecting straight to the database —
 //! and no more: `CLIENT_DEPRECATE_EOF` is left off so a result set is
 //! bounded by the EOF packets `result.rs` reads.
 //!
-//! `mysql_native_password` is `SHA1(password) XOR SHA1(nonce +
+//! The native password is `SHA1(password) XOR SHA1(nonce +
 //! SHA1(SHA1(password)))`: the server holds `SHA1(SHA1(password))` and
 //! recovers `SHA1(password)` from the response to check it, and a
-//! listener on the wire gets neither. `caching_sha2_password`, the default
-//! since 8.0, is not implemented; an account that uses it is told so, and
-//! the server can be asked for `mysql_native_password` on that account.
+//! listener on the wire gets neither. `caching_sha2_password`, which some
+//! servers default to, is not implemented; an account that uses it is told
+//! so, and the server can be asked for the native password on that account.
 
 use codec::cursor::Cursor;
 use codec::sha1::{DIGEST_LENGTH, digest};
 use codec::writer::ByteWriter;
 use transport::error::{Result, protocol_error};
 
-use crate::wire::{Mysql, MysqlWrite};
+use crate::wire::{MariaDb, MariaDbWrite};
 
 /// The version byte a greeting opens with.
 pub const PROTOCOL_VERSION: u8 = 10;
