@@ -598,7 +598,7 @@ mod tests {
         assert_eq!(first.bytes, b"it's \\here");
         assert!(first.origin_uri.ends_with("/orders/inbox/payload"));
         let second = next(&far_end, &mut session);
-        assert!(second.bytes.is_empty());
+        assert_eq!(second.bytes, [] as [u8; 0]);
         assert!(second.origin_uri.ends_with("/orders/outbox/body"));
         let binary = next(&far_end, &mut session);
         assert_eq!(
