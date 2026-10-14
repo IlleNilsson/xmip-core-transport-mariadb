@@ -4,26 +4,32 @@
 //! a configured query is what Xmip carries, the first column is where it
 //! came from.
 //!
-//! `MariaDB` is a database the estate's Parties already have, and its
-//! protocol also reaches the MySQL servers they have. A table in one is
-//! the oldest integration surface there is: a producer inserts, an
+//! `MariaDB` is a database the estate's Parties already have. A table in
+//! one is the oldest integration surface there is: a producer inserts, an
 //! integrator polls. A Receive Location runs its
 //! query — `SELECT id, payload FROM inbox ORDER BY id` unless told
 //! otherwise — and hands each row up; a Send Location inserts the Stream
 //! as one column of one row. What the column holds is the Location's to
 //! declare, never the bytes' (ADR-0038): `column = "binary"`, the default,
 //! inserts every Stream as an `X'…'` hexadecimal literal and reads a value
-//! back from a hex form (`MariaDB`'s, `xmip-core-library-sql`); `column = "text"` decodes the Stream
+//! back from a hex form (`MariaDB`'s, `xmip-core-library-sql`);
+//! `column = "text"` decodes the Stream
 //! strictly in its `encoding` — `utf-8` unless another Unicode form is
 //! named — inserts it as a string literal, and encodes a value read back
 //! to that form. A Stream that is not its declared form is refused, never
-//! repaired; so is a row value that is not UTF-8. What is spoken is
-//! the client/server protocol as every client since 4.1 speaks it, on
-//! port 3306: the greeting, a response with the password scrambled the
-//! native password way (`handshake.rs`, SHA-1 from codec),
-//! `COM_QUERY` with rows as text (`result.rs`), `COM_QUIT`.
-//! `caching_sha2_password` is not implemented and a server that asks for
-//! it is told so; TLS is `xmip-core-library-tls`'s, per ADR-0033.
+//! repaired; so is a row value that is not UTF-8.
+//!
+//! **The protocol is `xmip-core-library-mariadb`'s**: the client/server
+//! protocol as every client since 4.1 speaks it, on port 3306, `COM_QUERY`
+//! with rows as text, `COM_QUIT`, and the far end the tests and the
+//! Playground serve. This crate logs in with `MariaDB`'s login, the native
+//! password; a server that asks for another plugin is told which this
+//! crate speaks. A MySQL server is the MySQL transport's
+//! (`xmip-core-transport-mysql`), which speaks MySQL's own logins over the
+//! same protocol. `tls = true` upgrades the connection to the estate's TLS
+//! before the login (ADR-0033), the server's certificate checked against
+//! the operating system's trust store for the address's host or
+//! `tls_name`.
 //!
 //! Rows are artefacts and this transport claims none of them, per ADR-0024:
 //! the atomic claim a database has, `SELECT … FOR UPDATE SKIP LOCKED`, only
@@ -52,32 +58,31 @@
 //! `host:3306/<database>/<table>/<column>`, or `<table>/<column>` on the
 //! configured server and database.
 
-pub mod client;
-pub mod handshake;
-pub mod result;
-pub mod session;
-pub mod wire;
+mod configured;
 
 use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use client::{Client, QueryResult};
-pub use session::{Answer, Event, Session};
+use mariadb::{Authentication, Client, Expecting, Guard, Insert, Logon, NativePassword, Session};
 use sql::MARIADB;
 use transport::ArrivalIdentity;
 use transport::claim::{NoNativeClaim, ResourceClaim};
 use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
+use transport::pool::{Pooled, alive};
 use transport::socket;
-use transport::sql::{COLUMN, Column, ENCODING, accept, destination};
-use transport::{Arrived, Configured, Directions, Login, Pool, Taken, Transport};
+use transport::sql::{Column, accept, destination};
+use transport::{Arrived, Directions, Login, Pool, Taken, Transport};
 
-use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
-
+/// The scheme a send target opens with and an origin carries.
+const SCHEME: &str = "mariadb";
 /// The schemes a send target may open with.
-const SCHEMES: &[&str] = &["mariadb"];
+const SCHEMES: &[&str] = &[SCHEME];
+
+/// The plugins this crate logs in with: `MariaDB`'s.
+const PLUGINS: &[&dyn Authentication] = &[&NativePassword];
 
 /// What a Receive Location runs unless told otherwise.
 pub const DEFAULT_QUERY: &str = "SELECT id, payload FROM inbox ORDER BY id";
@@ -102,9 +107,23 @@ pub struct MariaDbTransport {
     refused: accept::RefusedRows,
     column: Column,
     timeout: Option<Duration>,
+    /// TLS before the login, where asked for.
+    guard: Option<Guard>,
     /// The connections a send inserts on and a receive queries on, logged
     /// in once per server and database and kept.
-    connections: Pool<Client>,
+    connections: Pool<Kept>,
+}
+
+/// A logged-in connection, kept while the server keeps it open.
+pub struct Kept(Client);
+
+impl Pooled for Kept {
+    /// While the server has not closed the connection — its `wait_timeout`
+    /// closes an idle one. Each `COM_QUERY` is read to its end, so nothing
+    /// of one is left for the next.
+    fn usable(&mut self) -> bool {
+        alive(self.0.socket())
+    }
 }
 
 impl MariaDbTransport {
@@ -125,6 +144,7 @@ impl MariaDbTransport {
             refused: accept::RefusedRows::default(),
             column: Column::Binary,
             timeout: None,
+            guard: None,
             connections: Pool::new(),
         }
     }
@@ -167,6 +187,13 @@ impl MariaDbTransport {
         self
     }
 
+    /// Log in under TLS, as `guard` says.
+    #[must_use]
+    pub fn guarded(mut self, guard: Guard) -> Self {
+        self.guard = Some(guard);
+        self
+    }
+
     /// Log in to the server.
     ///
     /// # Errors
@@ -176,7 +203,29 @@ impl MariaDbTransport {
     }
 
     fn connect_to(&self, server: &str, database: &str) -> Result<Client> {
-        Client::connect(server, database, &self.login, self.timeout)
+        let logon = Logon {
+            user: &self.login.user,
+            password: &self.login.password,
+            database,
+            plugins: PLUGINS,
+            guard: self.guard.as_ref(),
+        };
+        Ok(Client::connect(server, &logon, self.timeout)?)
+    }
+
+    /// One query or statement on the connection kept for `server` and
+    /// `database`, logged in on the first.
+    fn exchange<T>(
+        &self,
+        server: &str,
+        database: &str,
+        mut work: impl FnMut(&mut Client) -> mariadb::Result<T>,
+    ) -> Result<T> {
+        self.connections.exchange(
+            &format!("{server}/{database}"),
+            || self.connect_to(server, database).map(Kept),
+            |kept| Ok(work(&mut kept.0)?),
+        )
     }
 
     /// Bind as the far end clients connect to, and report the address.
@@ -193,14 +242,29 @@ impl MariaDbTransport {
     /// # Errors
     /// Where the connection could not be accepted or the login failed.
     pub fn accept_one(&self, listener: &TcpListener) -> Result<Session> {
-        Session::accept(listener, &self.login, self.timeout)
-            .map(|session| session.holding(self.column))
+        let (stream, _) = socket::accept_tcp(listener, self.timeout)?;
+        let expecting = Expecting::new(&self.login.user, &self.login.password, &NativePassword);
+        Ok(Session::accept(stream, &expecting)?)
+    }
+
+    /// The Stream `insert` carries, as this transport's column holds it,
+    /// its origin where `session` received it.
+    #[must_use]
+    pub fn taken(&self, session: &Session, insert: Insert) -> Taken {
+        let origin = format!(
+            "{SCHEME}://{}/{}/{}/{}",
+            session.peer(),
+            session.database(),
+            insert.table,
+            insert.column
+        );
+        Taken::new(origin, self.column.stored(insert.literal))
     }
 }
 
 impl Transport for MariaDbTransport {
     fn name(&self) -> &'static str {
-        "mariadb"
+        SCHEME
     }
 
     fn directions(&self) -> Directions {
@@ -222,26 +286,22 @@ impl Transport for MariaDbTransport {
     /// read again is then the query's (a query that consumes as it reads makes
     /// acceptance at-most-once).
     fn receive(&self) -> Result<Vec<Arrived>> {
-        let result = self.connections.exchange(
-            &format!("{}/{}", self.server, self.database),
-            || self.connect(),
-            |client| client.query(&self.query),
-        )?;
+        let result = self.exchange(&self.server, &self.database, |client| {
+            client.query(&self.query)
+        })?;
         let shared = Arc::new(self.clone());
         accept::arrivals(
             result.rows,
             &self.refused,
-            |name| format!("mariadb://{}/{}?row={name}", self.server, self.database),
+            |name| format!("{SCHEME}://{}/{}?row={name}", self.server, self.database),
             Clone::clone,
             |value| self.column.bytes(&value, &MARIADB),
             |name| {
                 let transport = Arc::clone(&shared);
                 accept::accepting(&MARIADB, self.accept.as_deref(), name, move |sql| {
-                    transport.connections.exchange(
-                        &format!("{}/{}", transport.server, transport.database),
-                        || transport.connect(),
-                        |client| client.execute(sql).map(|_| ()),
-                    )
+                    transport.exchange(&transport.server, &transport.database, |client| {
+                        client.execute(sql).map(|_| ())
+                    })
                 })
             },
         )
@@ -255,75 +315,15 @@ impl Transport for MariaDbTransport {
         let to = destination(SCHEMES, target, &self.server, &self.database)?;
         let literal = self.column.literal(bytes, &MARIADB)?;
         let insert = MARIADB.insert(to.table, to.column, &literal);
-        self.connections.exchange(
-            &format!("{}/{}", to.server, to.database),
-            || self.connect_to(to.server, to.database),
-            |client| client.execute(&insert).map(|_| ()),
-        )
+        self.exchange(to.server, to.database, |client| {
+            client.execute(&insert).map(|_| ())
+        })
     }
 
     /// Rows are artefacts, and one receive holds no transaction to claim
     /// one in.
     fn claims(&self) -> Option<&dyn ResourceClaim> {
         Some(&NoNativeClaim)
-    }
-}
-
-impl Configured for MariaDbTransport {
-    /// The address is the server's host and port: where a Location connects.
-    const SETTINGS: &'static Settings = &Settings {
-        technology: env!("CARGO_PKG_NAME"),
-        settings: &[
-            Setting {
-                name: "database",
-                kind: Kind::Text,
-                presence: Presence::Required,
-                meaning: "The database a Location logs in to and reads or inserts into.",
-                applies: Applies::Both,
-            },
-            Setting {
-                name: "user",
-                kind: Kind::Text,
-                presence: Presence::Required,
-                meaning: "The user a Location logs in as.",
-                applies: Applies::Both,
-            },
-            Setting {
-                name: "query",
-                kind: Kind::Text,
-                presence: Presence::Default(Fixed::Text(DEFAULT_QUERY)),
-                meaning: "The query a receive runs: the first column names the row, the last \
-                          is the Stream.",
-                applies: Applies::Receive,
-            },
-            accept::ACCEPT,
-            COLUMN,
-            ENCODING,
-            Setting {
-                name: "timeout",
-                kind: Kind::Duration,
-                presence: Presence::Optional,
-                meaning: "How long a server that stops mid-packet is waited on; unbounded \
-                          when left out.",
-                applies: Applies::Both,
-            },
-        ],
-    };
-
-    /// The password comes through the Location's credentials, never a
-    /// setting.
-    fn configured(address: &str, settings: &Read) -> Result<Self> {
-        let mut transport = Self::new(address, settings.text("database"), settings.text("user"));
-        if let Some(query) = settings.optional_text("query") {
-            transport = transport.with_query(query);
-        }
-        if let Some(statement) = settings.optional_text(accept::ACCEPT.name) {
-            transport = transport.with_accept(statement);
-        }
-        if let Some(timeout) = settings.optional_duration("timeout") {
-            transport = transport.timing_out_after(timeout);
-        }
-        Ok(transport.holding(Column::configured(settings)?))
     }
 }
 
@@ -340,9 +340,11 @@ impl MariaDbTransport {
 impl Accepting for MariaDbTransport {
     fn take_one(self, listener: &TcpListener) -> Result<Taken> {
         // The client keeps its connection for the next insert.
-        self.accept_one(listener)?
+        let mut session = self.accept_one(listener)?;
+        let insert = session
             .next_insert()?
-            .ok_or_else(|| protocol_error("the client closed without inserting"))
+            .ok_or_else(|| protocol_error("the client closed without inserting"))?;
+        Ok(self.taken(&session, insert))
     }
 }
 
@@ -372,11 +374,15 @@ impl Loopback for MariaDbTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handshake::{CAPABILITIES, HandshakeV10, NATIVE_PASSWORD, encode_handshake};
-    use crate::wire::{MariaDbWrite, frame};
     use codec::unicode::Form;
+    use mariadb::handshake::{CAPABILITIES, HandshakeV10, encode_auth_switch, encode_handshake};
+    use mariadb::session::SERVER_VERSION;
+    use mariadb::wire::frame;
+    use mariadb::{Answer, Event, NATIVE_PASSWORD};
+    use transport::Configured;
     use transport::error::TransportError;
     use transport::payload::edge_payloads;
+    use xcore::settings::Applies;
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
@@ -398,13 +404,18 @@ mod tests {
         assert_eq!(built.query, DEFAULT_QUERY);
         assert_eq!(built.timeout, Some(secs(2)));
         assert_eq!(built.column, Column::Binary, "bytes unless declared");
+        assert!(built.guard.is_none(), "the clear unless tls = true");
         let texts = [
             text("database", "orders"),
             text("user", "xmip"),
             text("column", "text"),
+            ("tls".to_string(), Given::Boolean(true)),
+            text("tls_name", "db.example"),
         ];
         let built = MariaDbTransport::open("db:3306", Applies::Send, &texts).expect("text");
         assert_eq!(built.column, Column::Text(Form::Utf8), "utf-8 unless named");
+        let guard = built.guard.expect("guarded");
+        assert_eq!(guard.name.as_deref(), Some("db.example"));
         let Err(refused) = MariaDbTransport::open("db:3306", Applies::Send, &given[1..]) else {
             panic!("database is required");
         };
@@ -549,6 +560,12 @@ mod tests {
         assert!(arrived[2].origin_uri.ends_with("?row=2"));
     }
 
+    /// The next Stream the client on `session` inserts.
+    fn next(far_end: &MariaDbTransport, session: &mut Session) -> Taken {
+        let insert = session.next_insert().expect("insert").expect("one");
+        far_end.taken(session, insert)
+    }
+
     #[test]
     fn a_send_inserts_the_stream_as_one_column_and_the_login_is_checked() {
         let far_end = MariaDbTransport::new("127.0.0.1:0", "orders", "xmip")
@@ -577,13 +594,13 @@ mod tests {
         });
         // One server and database, so one login for all three inserts.
         let mut session = far_end.accept_one(&listener).expect("accepting");
-        let first = session.next_insert().expect("first").expect("one");
+        let first = next(&far_end, &mut session);
         assert_eq!(first.bytes, b"it's \\here");
         assert!(first.origin_uri.ends_with("/orders/inbox/payload"));
-        let second = session.next_insert().expect("second").expect("one");
+        let second = next(&far_end, &mut session);
         assert!(second.bytes.is_empty());
         assert!(second.origin_uri.ends_with("/orders/outbox/body"));
-        let binary = session.next_insert().expect("third").expect("one");
+        let binary = next(&far_end, &mut session);
         assert_eq!(
             binary.bytes,
             [0xff, 0xfe],
@@ -629,12 +646,12 @@ mod tests {
         // One handshake for every insert: one session accepted.
         let mut session = far_end.accept_one(&listener).expect("accepting");
         for n in 0..SENDS {
-            let inserted = session.next_insert().expect("insert").expect("one");
+            let inserted = next(&far_end, &mut session);
             assert_eq!(inserted.bytes, n.to_string().as_bytes());
         }
         drop(session);
         let mut again = far_end.accept_one(&listener).expect("a new login");
-        let last = again.next_insert().expect("insert").expect("one");
+        let last = next(&far_end, &mut again);
         assert_eq!(last.bytes, b"after the close");
         sender.join().expect("thread").expect("sending");
         assert_eq!(near.connections.opened(), 2);
@@ -733,7 +750,7 @@ mod tests {
         assert!(!error.retryable);
         assert!(error.message.contains("1146 (42S02)"));
         assert_eq!(deleted, 3);
-        assert_eq!(version, session::SERVER_VERSION);
+        assert_eq!(version, SERVER_VERSION);
     }
 
     #[test]
@@ -750,9 +767,7 @@ mod tests {
                 plugin: "caching_sha2_password".into(),
             }),
         );
-        let mut switch = vec![0xfe];
-        switch.cstring("caching_sha2_password");
-        switch.extend_from_slice(b"nonce-nonce-nonce-no\0");
+        let switch = encode_auth_switch("caching_sha2_password", b"nonce-nonce-nonce-no");
         std::thread::spawn(move || {
             for (first, second) in [
                 (&greeting[..], &frame(&mut 2, &switch)[..]),

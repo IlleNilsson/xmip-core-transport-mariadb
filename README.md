@@ -1,9 +1,22 @@
 # xmip-core-transport-mariadb
 
 MariaDB transport: one row of a query is one Stream, a send is one
-INSERT; the client/server protocol with native password authentication, which
-also reaches MySQL servers. A technology of
+INSERT. A technology of
 [xmip-core-transport](https://github.com/IlleNilsson/xmip-core-transport).
+
+The protocol is
+[xmip-core-library-mariadb](https://github.com/IlleNilsson/xmip-core-library-mariadb)'s,
+both halves: the client this crate queries and inserts with, and the far end
+its tests and the Playground serve. This crate logs in with MariaDB's login,
+the native password. A MySQL server is
+[xmip-core-transport-mysql](https://github.com/IlleNilsson/xmip-core-transport-mysql)'s,
+which speaks MySQL's own logins over the same protocol.
+
+`tls = true` (boolean, default false) upgrades the connection to the estate's
+TLS (`xmip-core-library-tls`, ADR-0033) after the greeting and before the
+login, the server's certificate checked against the operating system's trust
+store for the address's host, or for `tls_name` where given. A server that
+offers no TLS is refused, never spoken to in the clear.
 
 ## Acknowledgement
 
