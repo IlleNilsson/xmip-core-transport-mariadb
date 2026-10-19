@@ -285,13 +285,14 @@ impl Transport for MariaDbTransport {
     /// or `Failed` — and tells the database nothing where none is: whether a row is
     /// read again is then the query's (a query that consumes as it reads makes
     /// acceptance at-most-once).
-    fn receive(&self) -> Result<Vec<Arrived>> {
+    fn receive_up_to(&self, most: usize) -> Result<Vec<Arrived>> {
         let result = self.exchange(&self.server, &self.database, |client| {
             client.query(&self.query)
         })?;
         let shared = Arc::new(self.clone());
         accept::arrivals(
             result.rows,
+            most,
             &self.refused,
             |name| format!("{SCHEME}://{}/{}?row={name}", self.server, self.database),
             Clone::clone,
@@ -307,11 +308,16 @@ impl Transport for MariaDbTransport {
         )
     }
 
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Gathered("an INSERT carries the body as one literal in its statement")
+    }
+
     /// Insert the bytes as one column of one row: as a hexadecimal
     /// literal, or as text where the column is declared to hold it — on the
     /// connection kept for the server and database, logged in on the first
     /// send to them.
-    fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
+    fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
+        let bytes: &[u8] = &outgoing.gather()?;
         let to = destination(SCHEMES, target, &self.server, &self.database)?;
         let literal = self.column.literal(bytes, &MARIADB)?;
         let insert = MARIADB.insert(to.table, to.column, &literal);
