@@ -31,7 +31,7 @@
 //! the operating system's trust store for the address's host or
 //! `tls_name`.
 //!
-//! Rows are artefacts and this transport claims none of them, per ADR-0024:
+//! Rows are artifacts and this transport claims none of them, per ADR-0024:
 //! the atomic claim a database has, `SELECT … FOR UPDATE SKIP LOCKED`, only
 //! holds inside a transaction, and the flow here opens and closes its
 //! connection inside one receive, so there is no transaction to hold it
@@ -326,7 +326,7 @@ impl Transport for MariaDbTransport {
         })
     }
 
-    /// Rows are artefacts, and one receive holds no transaction to claim
+    /// Rows are artifacts, and one receive holds no transaction to claim
     /// one in.
     fn claims(&self) -> Option<&dyn ResourceClaim> {
         Some(&NoNativeClaim)
@@ -623,7 +623,7 @@ mod tests {
         assert!(!refused.retryable);
         assert!(refused.message.contains("1045"));
         assert!(nobody.expect_err("wrong user").message.contains("28000"));
-        assert!(far_end.claims().is_some(), "rows are artefacts");
+        assert!(far_end.claims().is_some(), "rows are artifacts");
         assert_eq!(far_end.name(), "mariadb");
         assert_eq!(far_end.directions(), Directions::BOTH);
     }
