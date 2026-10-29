@@ -11,6 +11,12 @@ use mariadb::Guard;
 use crate::{DEFAULT_QUERY, MariaDbTransport};
 
 impl Configured for MariaDbTransport {
+    /// The password the Location's secret holds, read at each login.
+    fn secured_by(mut self, secret: transport::Secured) -> Result<Self> {
+        self.secret = Some(secret);
+        Ok(self)
+    }
+
     /// The address is the server's host and port: where a Location connects.
     const SETTINGS: &'static Settings = &Settings {
         technology: env!("CARGO_PKG_NAME"),
@@ -70,7 +76,7 @@ impl Configured for MariaDbTransport {
     /// The schemes a Location's address is entered with to choose this technology.
     const SCHEMES: &'static [&'static str] = crate::SCHEMES;
 
-    /// The password comes through the Location's credentials, never a
+    /// The password is the secret the Location names, never a
     /// setting.
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         let mut transport = Self::new(address, settings.text("database"), settings.text("user"));
