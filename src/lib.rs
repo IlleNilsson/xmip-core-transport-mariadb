@@ -96,6 +96,9 @@ const LOOPBACK_TARGET: &str = "probe/payload";
 
 #[derive(Clone)]
 pub struct MariaDbTransport {
+    /// The secret its Location names, whose password the login presents,
+    /// read at each login (ADR-0019, amendment 2026-10-29).
+    secret: Option<transport::Secured>,
     server: String,
     database: String,
     login: Login,
@@ -136,6 +139,7 @@ impl MariaDbTransport {
         user: impl Into<String>,
     ) -> Self {
         Self {
+            secret: None,
             server: server.into(),
             database: database.into(),
             login: Login::new(user, ""),
@@ -203,9 +207,11 @@ impl MariaDbTransport {
     }
 
     fn connect_to(&self, server: &str, database: &str) -> Result<Client> {
+        let presented =
+            transport::secured::logged_in(&self.login, self.secret.as_ref(), "mariadb")?;
         let logon = Logon {
-            user: &self.login.user,
-            password: &self.login.password,
+            user: &presented.user,
+            password: &presented.password,
             database,
             plugins: PLUGINS,
             guard: self.guard.as_ref(),
