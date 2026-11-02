@@ -27,6 +27,14 @@ mariadb = { package = "xmip-core-library-mariadb", git = "https://github.com/Ill
 # form, the INSERT a send writes.
 sql = { package = "xmip-core-library-sql", git = "https://github.com/IlleNilsson/xmip-core-library-sql", branch = "main" }
 
+# The module's timing program (doc/governance/rust-style.md section 5c): a
+# plain cargo test leaves it out, and the landing runs it after every other
+# test here, alone, one test at a time, so what it measures is Xmip's work.
+[[test]]
+name = "measured"
+path = "tests/measured/main.rs"
+test = false
+
 [dev-dependencies]
 # The loopback payloads the tests drive, from the capability's test
 # support and never a production build (ADR-0044).
