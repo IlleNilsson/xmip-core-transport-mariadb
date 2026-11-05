@@ -7,7 +7,7 @@ INSERT. A technology of
 The protocol is
 [xmip-core-library-mariadb](https://github.com/IlleNilsson/xmip-core-library-mariadb)'s,
 both halves: the client this crate queries and inserts with, and the far end
-its tests and the Playground serve. This crate logs in with MariaDB's login,
+its tests and the Essentials serve. This crate logs in with MariaDB's login,
 the native password. A MySQL server is
 [xmip-core-transport-mysql](https://github.com/IlleNilsson/xmip-core-transport-mysql)'s,
 which speaks MySQL's own logins over the same protocol.
