@@ -22,7 +22,7 @@
 //! **The protocol is `xmip-core-library-mariadb`'s**: the client/server
 //! protocol as every client since 4.1 speaks it, on port 3306, `COM_QUERY`
 //! with rows as text, `COM_QUIT`, and the far end the tests and the
-//! Playground serve. This crate logs in with `MariaDB`'s login, the native
+//! Essentials serve. This crate logs in with `MariaDB`'s login, the native
 //! password; a server that asks for another plugin is told which this
 //! crate speaks. A MySQL server is the MySQL transport's
 //! (`xmip-core-transport-mysql`), which speaks MySQL's own logins over the

@@ -21,7 +21,7 @@ transport = { package = "xmip-core-transport", git = "https://github.com/IlleNil
 # transport::Configured (ADR-0064, amendment 2026-09-26).
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 # The protocol, both halves, and the native password this crate logs in
-# with; the far end the tests and the Playground serve.
+# with; the far end the tests and the Essentials serve.
 mariadb = { package = "xmip-core-library-mariadb", git = "https://github.com/IlleNilsson/xmip-core-library-mariadb", branch = "main" }
 # SQL: the MariaDB dialect this server speaks — its literals, its binary
 # form, the INSERT a send writes.
