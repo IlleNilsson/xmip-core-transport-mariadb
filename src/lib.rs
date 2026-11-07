@@ -391,6 +391,7 @@ mod tests {
     use mariadb::session::SERVER_VERSION;
     use mariadb::wire::frame;
     use mariadb::{Answer, Event, NATIVE_PASSWORD};
+    use std::assert_matches;
     use transport::Configured;
     use transport::error::TransportError;
     use transport::payload::edge_payloads;
@@ -692,11 +693,11 @@ mod tests {
         let mut session = accept();
         for _ in 0..RECEIVES {
             let event = session.next_event().expect("query");
-            assert!(matches!(event, Some(Event::Selected(_))), "{event:?}");
+            assert_matches!(event, Some(Event::Selected(_)), "{event:?}");
         }
         drop(session);
         let mut again = accept();
-        assert!(matches!(again.next_event(), Ok(Some(Event::Selected(_)))));
+        assert_matches!(again.next_event(), Ok(Some(Event::Selected(_))));
         assert_eq!(receiver.join().expect("thread").expect("after").len(), 1);
         assert_eq!(near.connections.opened(), 2);
     }
