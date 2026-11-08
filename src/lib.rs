@@ -44,7 +44,9 @@
 //! only reads. Where the Location declares `accept` — `DELETE FROM inbox WHERE
 //! id = ?` — it runs once a row's cycle accepted it, the row's name bound in
 //! place of `?` (`transport::sql::accept`), written as `MariaDB`'s string
-//! literal. A refused row is left where it lies, and not received again
+//! literal in the mode the session reads (`mariadb::Client::dialect`: a
+//! backslash escaped, or itself where the server's status flags carry
+//! `NO_BACKSLASH_ESCAPES`). A refused row is left where it lies, and not received again
 //! while its body is unchanged. A row whose cycle failed is left, and the next
 //! receive reads it again; so is a row whose name is NULL, which no statement
 //! can name. Where `accept` is left out a row's verdict tells the database
@@ -65,7 +67,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mariadb::{Authentication, Client, Expecting, Guard, Insert, Logon, NativePassword, Session};
-use sql::MARIADB;
 use transport::ArrivalIdentity;
 use transport::claim::{NoNativeClaim, ResourceClaim};
 use transport::error::{Result, protocol_error};
@@ -292,8 +293,10 @@ impl Transport for MariaDbTransport {
     /// read again is then the query's (a query that consumes as it reads makes
     /// acceptance at-most-once).
     fn receive_up_to(&self, most: usize) -> Result<Vec<Arrived>> {
-        let result = self.exchange(&self.server, &self.database, |client| {
-            client.query(&self.query)
+        let (result, dialect) = self.exchange(&self.server, &self.database, |client| {
+            client
+                .query(&self.query)
+                .map(|result| (result, client.dialect()))
         })?;
         let shared = Arc::new(self.clone());
         accept::arrivals(
@@ -302,10 +305,10 @@ impl Transport for MariaDbTransport {
             &self.refused,
             |name| format!("{SCHEME}://{}/{}?row={name}", self.server, self.database),
             Clone::clone,
-            |value| self.column.bytes(&value, &MARIADB),
+            |value| self.column.bytes(&value, dialect),
             |name| {
                 let transport = Arc::clone(&shared);
-                accept::accepting(&MARIADB, self.accept.as_deref(), name, move |sql| {
+                accept::accepting(dialect, self.accept.as_deref(), name, move |sql| {
                     transport.exchange(&transport.server, &transport.database, |client| {
                         client.execute(sql).map(|_| ())
                     })
@@ -325,8 +328,14 @@ impl Transport for MariaDbTransport {
     fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
         let bytes: &[u8] = &outgoing.gather()?;
         let to = destination(SCHEMES, target, &self.server, &self.database)?;
-        let literal = self.column.literal(bytes, &MARIADB)?;
-        let insert = MARIADB.insert(to.table, to.column, &literal);
+        // A Stream that is not the column's text is refused here, before any
+        // connection; the literal sent is written as the session reads it,
+        // a backslash escaped, or itself under NO_BACKSLASH_ESCAPES.
+        self.column.literal(bytes, &sql::MARIADB)?;
+        let dialect: &sql::Dialect =
+            self.exchange(to.server, to.database, |client| Ok(client.dialect()))?;
+        let literal = self.column.literal(bytes, dialect)?;
+        let insert = dialect.insert(to.table, to.column, &literal);
         self.exchange(to.server, to.database, |client| {
             client.execute(&insert).map(|_| ())
         })
@@ -769,6 +778,7 @@ mod tests {
                 connection_id: 1,
                 nonce: vec![b'n'; 20],
                 capabilities: CAPABILITIES,
+                status: 2,
                 plugin: "caching_sha2_password".into(),
             }),
         );
