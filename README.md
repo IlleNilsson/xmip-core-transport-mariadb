@@ -32,8 +32,11 @@ The SQL it writes and its far end reads — backtick identifiers, string
 literals with the backslash escapes the server reads, the `X'…'` literal,
 the one INSERT with its table and column always quoted identifiers so a
 target can name nothing but them, and a statement's verb — is `MariaDB`'s as
-`xmip-core-library-sql` writes it (`sql::MARIADB`), the one SQL in the
-estate.
+`xmip-core-library-sql` writes it, the one SQL in the estate, in the mode
+the session reads (`mariadb::Client::dialect`): `sql::MARIADB`, a backslash
+escaped, or `sql::MARIADB_NO_BACKSLASH_ESCAPES` where the status flags of the
+server's greeting or its last OK carry `NO_BACKSLASH_ESCAPES` (`0x0200`). A
+quote is written `''` in both.
 
 Where a send target puts its row — `<scheme>://host:port/<database>/<table>/<column>`,
 `host:port/<database>/<table>/<column>` or `<table>/<column>` — is

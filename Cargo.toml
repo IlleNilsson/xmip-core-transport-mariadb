@@ -24,7 +24,7 @@ xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core
 # with; the far end the tests and the Essentials serve.
 mariadb = { package = "xmip-core-library-mariadb", git = "https://github.com/IlleNilsson/xmip-core-library-mariadb", branch = "main" }
 # SQL: the MariaDB dialect this server speaks — its literals, its binary
-# form, the INSERT a send writes.
+# form, the INSERT a send writes — in the mode the session reads.
 sql = { package = "xmip-core-library-sql", git = "https://github.com/IlleNilsson/xmip-core-library-sql", branch = "main" }
 
 # The module's timing program (doc/governance/rust-style.md section 5c): a
