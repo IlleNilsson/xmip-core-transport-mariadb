@@ -4,6 +4,11 @@ MariaDB transport: one row of a query is one Stream, a send is one
 INSERT. A technology of
 [xmip-core-transport](https://github.com/IlleNilsson/xmip-core-transport).
 
+The transport is every SQL technology's, `transport::sql::SqlTransport`, over
+this crate's `MariaDb` wire (2026-11-13): its name and scheme, its settings,
+the MariaDB dialect in the mode the session reads, the login, and the far end
+its loopback serves (`accept_one`, `taken`).
+
 The protocol is
 [xmip-core-library-mariadb](https://github.com/IlleNilsson/xmip-core-library-mariadb)'s,
 both halves: the client this crate queries and inserts with, and the far end
