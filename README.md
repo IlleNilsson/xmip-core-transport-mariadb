@@ -66,6 +66,10 @@ A Send Location inserts on a connection logged in once per server and database a
 
 A Receive Location runs its query on a connection kept the same way: logged in on its first receive and reused by every receive after, replaced where the server closed it. Until 2026-09-28 every receive logged in and quit.
 
+## The declaration
+
+What a Location of this technology is configured with is two `const`s in its `declaration` module, `src/declaration.rs`, beside the code, which its wire hands `transport::sql`'s `Configured` (ADR-0064, amendment 2026-11-26): `declaration::SETTINGS`, `database`, `user`, `query`, `accept`, `column`, `encoding`, `timeout`, `tls` and `tls_name`, each but `tls` what every SQL Location declares (`transport::sql`), and `SCHEMES`, `mariadb`. Built with its `declaration` feature alone (`--no-default-features --features declaration`), the crate is those and nothing more: its code and every crate the code is built on — the protocol, the dialect, and TLS, the capability's with it — are behind the default feature. So the library the surfaces load can carry it without the code, for the language server and the desktop to suggest and check a `MariaDB` Location's settings though no node in their process loaded the technology, once the gathering crate of open problem 48 links it. `test/Declaration.Test.ps1` in the estate holds that the declaration builds nothing the transport capability does not.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it

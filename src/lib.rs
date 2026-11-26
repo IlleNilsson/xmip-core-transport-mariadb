@@ -44,36 +44,53 @@
 //! A send target is `mariadb://host:3306/<database>/<table>/<column>`,
 //! `host:3306/<database>/<table>/<column>`, or `<table>/<column>` on the
 //! configured server and database.
+//!
+//! **Built with its `declaration` feature alone** the crate is
+//! [`declaration`], what a Location of it is configured with, and none of
+//! the code above, which is behind the default feature: what the surfaces'
+//! library carries (ADR-0064, amendment 2026-11-26).
 
-mod configured;
+#[cfg(feature = "declaration")]
+pub mod declaration;
 
+#[cfg(feature = "default")]
 use std::net::TcpListener;
+#[cfg(feature = "default")]
 use std::time::Duration;
 
+#[cfg(feature = "default")]
 use mariadb::{Authentication, Client, Expecting, Insert, Logon, NativePassword, Session};
+#[cfg(feature = "default")]
 use sql::Dialect;
+#[cfg(feature = "default")]
 use tls::ClientSettings;
+#[cfg(feature = "default")]
 use transport::error::{Result, protocol_error};
-use transport::pool::alive;
-use transport::socket;
+#[cfg(feature = "default")]
 use transport::sql::{Probe, Rows, SqlTransport, Wire};
-use transport::{Login, Taken};
+#[cfg(feature = "default")]
+use transport::{Login, Taken, pool::alive, socket};
+#[cfg(feature = "default")]
 use xcore::settings::{Read, Settings};
 
 /// The plugins this crate logs in with: `MariaDB`'s.
+#[cfg(feature = "default")]
 const PLUGINS: &[&dyn Authentication] = &[&NativePassword];
 
 /// A Location over a `MariaDB` server.
+#[cfg(feature = "default")]
 pub type MariaDbTransport = SqlTransport<MariaDb>;
 
 /// `MariaDB`'s wire: `xmip-core-library-mariadb`'s client with the native
 /// password, TLS before the login where asked for.
+#[cfg(feature = "default")]
 #[derive(Clone, Debug, Default)]
 pub struct MariaDb {
     /// TLS before the login, where asked for.
     guard: Option<ClientSettings>,
 }
 
+#[cfg(feature = "default")]
 impl MariaDb {
     /// Logging in under TLS, as `guard` says.
     #[must_use]
@@ -88,12 +105,13 @@ impl MariaDb {
     }
 }
 
+#[cfg(feature = "default")]
 impl Wire for MariaDb {
     type Client = Client;
 
     const NAME: &'static str = "mariadb";
-    const SCHEMES: &'static [&'static str] = &["mariadb"];
-    const SETTINGS: &'static Settings = configured::SETTINGS;
+    const SCHEMES: &'static [&'static str] = declaration::SCHEMES;
+    const SETTINGS: &'static Settings = declaration::SETTINGS;
     /// A user with no password, which the far end demands and the near end
     /// gives.
     const PROBE: Probe = Probe {
@@ -167,6 +185,7 @@ impl Wire for MariaDb {
 ///
 /// # Errors
 /// Where the connection could not be accepted or the login failed.
+#[cfg(feature = "default")]
 pub fn accept_one(transport: &MariaDbTransport, listener: &TcpListener) -> Result<Session> {
     let (stream, _) = socket::accept_tcp(listener, transport.timeout())?;
     let login = transport.login();
@@ -176,6 +195,7 @@ pub fn accept_one(transport: &MariaDbTransport, listener: &TcpListener) -> Resul
 
 /// The Stream `insert` carries, as `transport`'s column holds it, its
 /// origin where `session` received it.
+#[cfg(feature = "default")]
 #[must_use]
 pub fn taken(transport: &MariaDbTransport, session: &Session, insert: Insert) -> Taken {
     MariaDbTransport::inserted(

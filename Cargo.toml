@@ -12,20 +12,32 @@ path = "src/lib.rs"
 
 [dependencies]
 # A Technology depends on its parent Capability, never the reverse
-# (repository-model.md); with its TLS, for the one reading of `tls` and
-# `tls_name` (`transport::sql::client_tls`).
-transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", features = ["tls"] }
+# (repository-model.md); with its TLS under the default feature, for the
+# one reading of `tls` and `tls_name` (`transport::sql::client_tls`). Its
+# declaration takes what every SQL Location declares (`transport::sql`),
+# which needs no TLS.
+transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
 # The settings this technology declares (xcore::settings), read through
 # transport::Configured (ADR-0064, amendment 2026-09-26).
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 # The protocol, both halves, and the native password this crate logs in
 # with; the far end the tests and the System Tests serve.
-mariadb = { package = "xmip-core-library-mariadb", git = "https://github.com/IlleNilsson/xmip-core-library-mariadb", branch = "main" }
+mariadb = { package = "xmip-core-library-mariadb", git = "https://github.com/IlleNilsson/xmip-core-library-mariadb", branch = "main", optional = true }
 # SQL: the MariaDB dialect this server speaks — its literals, its binary
 # form, the INSERT a send writes — in the mode the session reads.
-sql = { package = "xmip-core-library-sql", git = "https://github.com/IlleNilsson/xmip-core-library-sql", branch = "main" }
+sql = { package = "xmip-core-library-sql", git = "https://github.com/IlleNilsson/xmip-core-library-sql", branch = "main", optional = true }
 # What a login checks the server by under TLS (`tls::ClientSettings`).
-tls = { package = "xmip-core-library-tls", git = "https://github.com/IlleNilsson/xmip-core-library-tls", branch = "main" }
+tls = { package = "xmip-core-library-tls", git = "https://github.com/IlleNilsson/xmip-core-library-tls", branch = "main", optional = true }
+
+[features]
+# The technology: its code, everything it is built on, and its declaration.
+# Without it the crate is its declaration alone (ADR-0064, amendments
+# 2026-10-22 and 2026-11-26).
+default = ["declaration", "transport/tls", "dep:mariadb", "dep:sql", "dep:tls"]
+# The declaration alone: what a Location of this technology is configured
+# with, `declaration::SETTINGS` and `SCHEMES`, and none of
+# the code — what the surfaces' library is to carry (open problem 48).
+declaration = []
 
 # The module's timing program (doc/governance/rust-style.md section 5c): a
 # plain cargo test leaves it out, and the landing runs it after every other
