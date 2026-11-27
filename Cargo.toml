@@ -30,13 +30,10 @@ sql = { package = "xmip-core-library-sql", git = "https://github.com/IlleNilsson
 tls = { package = "xmip-core-library-tls", git = "https://github.com/IlleNilsson/xmip-core-library-tls", branch = "main", optional = true }
 
 [features]
-# The technology: its code, everything it is built on, and its declaration.
-# Without it the crate is its declaration alone (ADR-0064, amendments
-# 2026-10-22 and 2026-11-26).
+# The code and its declaration: the transport guide's "The declaration",
+# module/core/capability/transport/doc/adding-a-transport.md.
 default = ["declaration", "transport/tls", "dep:mariadb", "dep:sql", "dep:tls"]
-# The declaration alone: what a Location of this technology is configured
-# with, `declaration::SETTINGS` and `SCHEMES`, and none of
-# the code — what the surfaces' library is to carry (open problem 48).
+# The declaration alone.
 declaration = []
 
 # The module's timing program (doc/governance/rust-style.md section 5c): a
