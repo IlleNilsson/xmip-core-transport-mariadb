@@ -64,11 +64,6 @@ A Receive Location runs its query on a connection kept the same way: logged in o
 
 What a Location of this technology is configured with is two `const`s in its `declaration` module, `src/declaration.rs`, beside the code, which its wire hands `transport::sql`'s `Configured` (ADR-0064, amendment 2026-11-26): `declaration::SETTINGS`, `database`, `user`, `query`, `accept`, `column`, `encoding`, `timeout`, `tls` and `tls_name`, each but `tls` what every SQL Location declares (`transport::sql`), and `SCHEMES`, `mariadb`. Built with its `declaration` feature alone (`--no-default-features --features declaration`), the crate is those and nothing more: its code and every crate the code is built on — the protocol, the dialect, and TLS, the capability's with it — are behind the default feature. So the library the surfaces load carries it without the code, through the gathering crate xmip-core-declaration (open problem 48), and the language server and the desktop suggest and check a `MariaDB` Location's settings though no node in their process loaded the technology. `test/Declaration.Test.ps1` in the estate holds that the declaration builds nothing the transport capability does not.
 
-## Toolchain
-
-`rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it
-here.
-
 ## Verification
 
 The included workflow is manual-only and calls the versioned shared workflow at

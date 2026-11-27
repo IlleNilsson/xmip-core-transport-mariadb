@@ -1,11 +1,11 @@
 [package]
 name = "xmip-core-transport-mariadb"
-version = "0.1.0"
-edition = "2024"
-license = "AGPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 repository = "https://github.com/IlleNilsson/xmip-core-transport-mariadb"
 description = "MariaDB transport: one row of a query is one Stream, a send is one INSERT; the client/server protocol of xmip-core-library-mariadb with MariaDB's native password, over the estate's TLS where asked. A xmip-core-transport technology."
-publish = false
+publish.workspace = true
 
 [lib]
 path = "src/lib.rs"
@@ -51,13 +51,5 @@ transport = { package = "xmip-core-transport", git = "https://github.com/IlleNil
 # The Unicode form a text column's test declares.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-too_many_lines = "warn"
-pedantic = { level = "warn", priority = -1 }
-missing_errors_doc = "warn"
-missing_panics_doc = "warn"
-unwrap_used = "warn"
-expect_used = "allow"
+[lints]
+workspace = true
